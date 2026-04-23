@@ -1,0 +1,81 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+// ENUMS
+enum CompanyType {
+  WATER_PLANT  
+  BEVERAGE      
+}
+
+enum Role {
+  SUPER_ADMIN 
+  ADMIN       
+  MANAGER      
+  STAFF         
+  DELIVERY_BOY 
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+
+// COMPANY
+model Company {
+  id        String      @id @default(uuid())
+  name      String
+  type      CompanyType
+  email     String?     @unique
+  phone     String?
+  address   String?
+  city      String?
+  state     String?
+  gstNumber String?
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  // Relations
+  users     User[]
+  @@map("companies")
+}
+
+// ─────────────────────────────────────────────
+// USER
+// Every user belongs to one company
+// companyId tells us which company they work for
+// ─────────────────────────────────────────────
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  password     String
+  firstName    String
+  lastName     String
+  phone        String?  @unique
+  role         Role     @default(STAFF)
+  gender       Gender?
+  address      String?
+  city         String?
+  isActive     Boolean  @default(true)
+  refreshToken String?
+
+  // Which company does this user work for?
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([email])
+  @@map("users")
+}
