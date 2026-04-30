@@ -10,10 +10,10 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { CompaniesModule } from './companies/companies.module';
 import { UsersModule } from './users/users.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
   imports: [
-    // Reads .env — isGlobal means no need to import in every module
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
@@ -25,12 +25,11 @@ import { UsersModule } from './users/users.module';
       { name: 'short', ttl: 1000, limit: 10 },
       { name: 'long', ttl: 60000, limit: 100 },
     ]),
-    // Global DB connection — @Global() in PrismaModule shares it everywhere
     PrismaModule,
-    // Auth — login, register, JWT strategies
     AuthModule,
     UsersModule,
     CompaniesModule,
+    CustomersModule,
   ],
   controllers: [AppController],
   providers: [

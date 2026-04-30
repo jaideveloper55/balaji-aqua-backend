@@ -67,7 +67,7 @@ export class AuthService {
             firstName: dto.firstName,
             lastName: dto.lastName,
             phone: dto.phone,
-            role: Role.ADMIN, // First user = always ADMIN
+            role: Role.ADMIN,
             companyId: company.id,
           },
         });
@@ -244,7 +244,7 @@ export class AuthService {
         { ...payload },
         {
           secret: this.configService.get<string>('JWT_ACCESS_SECRET') as string,
-          expiresIn: '15m',
+          expiresIn: this.configService.get('JWT_ACCESS_EXPIRY') || '15m',
         },
       ),
       this.jwtService.signAsync(

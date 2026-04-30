@@ -1,8 +1,3 @@
-// WHY THIS EXISTS:
-//   This guard protects your API endpoints from unauthorized access.
-//   Add @UseGuards(JwtAuthGuard) to any route that requires login.
-//
-
 import {
   ExecutionContext,
   Injectable,
@@ -29,8 +24,8 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     //   Example: /auth/login, /auth/register
     //   We mark them with @Public() decorator and skip auth check.
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
-      context.getHandler(), 
-      context.getClass(), 
+      context.getHandler(),
+      context.getClass(),
     ]);
 
     // If route is marked @Public() — skip JWT verification

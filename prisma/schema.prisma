@@ -44,15 +44,17 @@ model Company {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  // Relations
+  
   users     User[]
+  customers Customer[] 
+
   @@map("companies")
 }
+
 
 // ─────────────────────────────────────────────
 // USER
 // Every user belongs to one company
-// companyId tells us which company they work for
 // ─────────────────────────────────────────────
 model User {
   id           String   @id @default(uuid())
@@ -78,4 +80,135 @@ model User {
   @@index([companyId])
   @@index([email])
   @@map("users")
+}
+
+
+
+enum CustomerType {
+  RESIDENTIAL
+  COMMERCIAL    
+  INDUSTRIAL 
+}
+
+enum CustomerStatus {
+  ACTIVE      
+  INACTIVE      
+  PENDING       
+}
+
+
+enum DeliveryFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ON_DEMAND
+}
+
+enum LedgerEntryType {
+  INVOICE
+  PAYMENT
+  CREDIT_NOTE
+  DEBIT_NOTE
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CREDIT       
+}
+
+
+model Customer {
+  id String @id @default(cuid())
+  customerCode String @unique
+  name String
+  phone String
+  email String?
+  type CustomerType @default(RESIDENTIAL)
+  status CustomerStatus @default(PENDING)
+
+  deliveryFrequency DeliveryFrequency @default(ON_DEMAND)
+  paymentMode PaymentMode @default(CASH)
+  notes String?
+
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  state             String?
+  pincode           String?
+  landmark          String?
+
+  // Finance
+  outstandingBalance Float @default(0)
+
+// Multi-tenancy — every query must filter by this
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+
+    // Relations to detail tab models
+  pricing CustomerPricing[]
+  ledger  CustomerLedger[]
+
+  createdAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([companyId,status])
+  @@map("customers")
+}
+
+
+
+// CUSTOMER PRICING
+
+model CustomerPricing {
+  id            String   @id @default(cuid())
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId     String
+  customerPrice Float
+  effectiveFrom DateTime @default(now())
+  effectiveTo   DateTime?
+  isActive      Boolean  @default(true)
+  companyId     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([companyId])
+  @@index([customerId, productId])
+  @@map("customer_pricing")
+}
+
+
+// CUSTOMER LEDGER
+
+model CustomerLedger {
+  id          String          @id @default(cuid())
+  customerId  String
+  customer    Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  entryType   LedgerEntryType
+  referenceNo String
+  description String
+  debitAmount  Float @default(0)
+  creditAmount Float @default(0)
+
+  cgst    Float @default(0)
+  sgst    Float @default(0)
+  igst    Float @default(0)
+
+  balance Float
+  entryDate DateTime
+  companyId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([companyId])
+  @@index([customerId, entryDate])
+  @@index([companyId, entryType])
+  @@map("customer_ledger")
 }
