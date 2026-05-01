@@ -60,6 +60,23 @@ enum LedgerEntryType {
   DEBIT_NOTE
 }
 
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+  OUT_OF_STOCK
+}
+
+enum ProductUnit {
+  PCS
+  LITRE
+  ML
+  BOX
+  CARTON
+  KG
+}
+
+
 // ─── COMPANY ────────────────────────────────────────────────────────────────
 // Your friend has 2 companies: Water Plant + Beverages
 // Each is a separate company row, seeded once on day one
@@ -79,6 +96,9 @@ model Company {
 
   userCompanies UserCompany[]
   customers     Customer[]
+
+  categories Category[]
+  products   Product[]
 
   @@map("companies")
 }
@@ -108,17 +128,7 @@ model User {
 }
 
 // ─── USER ↔ COMPANY JOIN TABLE ───────────────────────────────────────────────
-// WHY JOIN TABLE?
-// Your friend (SUPER_ADMIN) needs access to BOTH companies.
-// A simple companyId on User only allows one company per user.
-//
-// With this table:
-//   Friend (SUPER_ADMIN): 2 rows → Water Plant + Beverages
-//   Staff at water plant: 1 row  → Water Plant only
-//   Delivery boy:         1 row  → whichever company they work for
-//
-// When friend logs in → frontend shows company switcher (TenantSelector)
-// JWT carries ALL companyIds; activeCompanyId tracked client-side
+
 model UserCompany {
   userId    String
   companyId String
@@ -234,4 +244,79 @@ model CustomerLedger {
   @@index([customerId, entryDate])
   @@index([companyId, entryType])
   @@map("customer_ledger")
+}
+
+
+// ─── CATEGORY ───────────────────────────────────────────────────────────────
+// Categories are scoped per company.
+// e.g. Water Plant has [Water Can, Bottle, Filter] — Beverage has [Soft Drink, Energy Drink]
+model Category {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String
+  color       String  @default("#2563eb") 
+  bg          String  @default("#dbeafe")
+  description String?
+  isActive    Boolean @default(true)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  products Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([slug, companyId])
+
+
+  @@unique([name, companyId])
+
+
+  @@index([companyId])
+  @@index([companyId, isActive])
+  @@map("categories")
+}
+
+
+// ─── PRODUCT ────────────────────────────────────────────────────────────────
+// Products are scoped per company. Each product belongs to exactly one category.
+model Product {
+  id          String        @id @default(cuid())
+  name        String
+  sku         String      
+  description String?
+  hsn         String?    
+
+  unit        ProductUnit   @default(PCS)
+  status      ProductStatus @default(ACTIVE)
+
+  // ─── Pricing ───
+  basePrice    Float    
+  costPrice    Float    @default(0) 
+  gstRate      Float    @default(0) 
+
+  // ─── Inventory ───
+  stock        Int      @default(0)
+  minStock     Int      @default(0)
+
+
+  // ─── Relations ───
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+ 
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sku, companyId])
+
+
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([categoryId])
+  @@map("products")
 }
