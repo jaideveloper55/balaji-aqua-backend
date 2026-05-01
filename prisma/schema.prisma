@@ -7,19 +7,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── ENUMS ──────────────────────────────────────────────────────────────────
 
-// ENUMS
 enum CompanyType {
-  WATER_PLANT  
-  BEVERAGE      
+  WATER_PLANT
+  BEVERAGE
 }
 
 enum Role {
   SUPER_ADMIN 
-  ADMIN       
-  MANAGER      
-  STAFF         
-  DELIVERY_BOY 
+  ADMIN        // company manager
+  STAFF        // office staff
+  DELIVERY_BOY // only sees assigned deliveries
 }
 
 enum Gender {
@@ -28,8 +27,42 @@ enum Gender {
   OTHER
 }
 
+enum CustomerType {
+  RESIDENTIAL
+  COMMERCIAL
+  INDUSTRIAL
+}
 
-// COMPANY
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+enum DeliveryFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ON_DEMAND
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CREDIT
+}
+
+enum LedgerEntryType {
+  INVOICE
+  PAYMENT
+  CREDIT_NOTE
+  DEBIT_NOTE
+}
+
+// ─── COMPANY ────────────────────────────────────────────────────────────────
+// Your friend has 2 companies: Water Plant + Beverages
+// Each is a separate company row, seeded once on day one
 model Company {
   id        String      @id @default(uuid())
   name      String
@@ -44,137 +77,126 @@ model Company {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  
-  users     User[]
-  customers Customer[] 
+  userCompanies UserCompany[]
+  customers     Customer[]
 
   @@map("companies")
 }
 
-
-// ─────────────────────────────────────────────
-// USER
-// Every user belongs to one company
-// ─────────────────────────────────────────────
+// ─── USER ───────────────────────────────────────────────────────────────────
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   password     String
   firstName    String
   lastName     String
-  phone        String?  @unique
-  role         Role     @default(STAFF)
+  phone        String?   @unique
+  role         Role      @default(STAFF)
   gender       Gender?
   address      String?
   city         String?
-  isActive     Boolean  @default(true)
+  isActive     Boolean   @default(true)
   refreshToken String?
 
-  // Which company does this user work for?
-  companyId    String
-  company      Company  @relation(fields: [companyId], references: [id])
+  userCompanies UserCompany[] // which companies this user can access
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@index([companyId])
   @@index([email])
   @@map("users")
 }
 
+// ─── USER ↔ COMPANY JOIN TABLE ───────────────────────────────────────────────
+// WHY JOIN TABLE?
+// Your friend (SUPER_ADMIN) needs access to BOTH companies.
+// A simple companyId on User only allows one company per user.
+//
+// With this table:
+//   Friend (SUPER_ADMIN): 2 rows → Water Plant + Beverages
+//   Staff at water plant: 1 row  → Water Plant only
+//   Delivery boy:         1 row  → whichever company they work for
+//
+// When friend logs in → frontend shows company switcher (TenantSelector)
+// JWT carries ALL companyIds; activeCompanyId tracked client-side
+model UserCompany {
+  userId    String
+  companyId String
+  createdAt DateTime @default(now())
 
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-enum CustomerType {
-  RESIDENTIAL
-  COMMERCIAL    
-  INDUSTRIAL 
+  @@id([userId, companyId])   // prevents duplicate (user, company) pairs
+  @@index([companyId])
+  @@map("user_companies")
 }
 
-enum CustomerStatus {
-  ACTIVE      
-  INACTIVE      
-  PENDING       
-}
-
-
-enum DeliveryFrequency {
-  DAILY
-  WEEKLY
-  MONTHLY
-  ON_DEMAND
-}
-
-enum LedgerEntryType {
-  INVOICE
-  PAYMENT
-  CREDIT_NOTE
-  DEBIT_NOTE
-}
-
-enum PaymentMode {
-  CASH
-  UPI
-  BANK_TRANSFER
-  CREDIT       
-}
-
-
+// ─── CUSTOMER ───────────────────────────────────────────────────────────────
+// Customer is scoped to ONE company.
+// Same person can exist as a customer in BOTH companies — they're separate
+// records (water plant subscription is independent from beverage subscription).
 model Customer {
-  id String @id @default(cuid())
-  customerCode String @unique
-  name String
-  phone String
-  email String?
-  type CustomerType @default(RESIDENTIAL)
-  status CustomerStatus @default(PENDING)
+  id           String         @id @default(cuid())
+  customerCode String
+  // ↑ NOT globally @unique — see @@unique([customerCode, companyId]) below
+
+  name         String
+  phone        String
+  email        String?
+  type         CustomerType   @default(RESIDENTIAL)
+  status       CustomerStatus @default(PENDING)
 
   deliveryFrequency DeliveryFrequency @default(ON_DEMAND)
-  paymentMode PaymentMode @default(CASH)
-  notes String?
+  paymentMode       PaymentMode       @default(CASH)
+  notes             String?
 
-  addressLine1      String?
-  addressLine2      String?
-  city              String?
-  state             String?
-  pincode           String?
-  landmark          String?
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  pincode      String?
+  landmark     String?
 
-  // Finance
   outstandingBalance Float @default(0)
 
-// Multi-tenancy — every query must filter by this
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
 
-
-    // Relations to detail tab models
   pricing CustomerPricing[]
   ledger  CustomerLedger[]
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([customerCode, companyId])
+  // ↑ CUS-001 can exist in Water Plant AND Beverages — but not twice in the same company
+
+  @@unique([phone, companyId])
+  // ↑ Same phone can exist in both companies (one person uses both businesses)
+  //    but cannot duplicate within the same company (no double-entry mistakes)
+
   @@index([companyId])
-  @@index([companyId,status])
+  @@index([companyId, status])
   @@map("customers")
 }
 
-
-
-// CUSTOMER PRICING
-
+// ─── CUSTOMER PRICING ───────────────────────────────────────────────────────
+// Per-customer custom pricing (e.g. bulk customer gets a special rate).
+// Multiple rows over time form a price history (effectiveFrom/To).
 model CustomerPricing {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   customerId    String
-  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer      Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
   productId     String
   customerPrice Float
-  effectiveFrom DateTime @default(now())
+  effectiveFrom DateTime  @default(now())
   effectiveTo   DateTime?
-  isActive      Boolean  @default(true)
+  isActive      Boolean   @default(true)
   companyId     String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([customerId])
   @@index([companyId])
@@ -182,9 +204,9 @@ model CustomerPricing {
   @@map("customer_pricing")
 }
 
-
-// CUSTOMER LEDGER
-
+// ─── CUSTOMER LEDGER ────────────────────────────────────────────────────────
+// Running list of money events per customer (invoices, payments, adjustments).
+// `balance` is the running balance after this entry — denormalized for speed.
 model CustomerLedger {
   id          String          @id @default(cuid())
   customerId  String
@@ -192,14 +214,15 @@ model CustomerLedger {
   entryType   LedgerEntryType
   referenceNo String
   description String
+
   debitAmount  Float @default(0)
   creditAmount Float @default(0)
 
-  cgst    Float @default(0)
-  sgst    Float @default(0)
-  igst    Float @default(0)
+  cgst Float @default(0)
+  sgst Float @default(0)
+  igst Float @default(0)
 
-  balance Float
+  balance   Float
   entryDate DateTime
   companyId String
 

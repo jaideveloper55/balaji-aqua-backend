@@ -24,15 +24,20 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload & { iat: number; exp: number }) {
+    // CHANGED: include userCompanies (join table) instead of single company
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {
-        company: {
-          select: {
-            id: true,
-            name: true,
-            type: true,
-            isActive: true,
+        userCompanies: {
+          include: {
+            company: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                isActive: true,
+              },
+            },
           },
         },
       },
@@ -46,17 +51,23 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!user.isActive)
       throw new UnauthorizedException('Account deactivated. Contact admin.');
 
-    // Company deactivated
-    if (!user.company.isActive)
-      throw new UnauthorizedException('Company account deactivated.');
+    // CHANGED: collect all active companies the user has access to
+    const companyIds = user.userCompanies
+      .filter((uc) => uc.company.isActive)
+      .map((uc) => uc.company.id);
+
+    // Block if user has no active companies (e.g. all his companies got deactivated)
+    if (companyIds.length === 0)
+      throw new UnauthorizedException(
+        'No active company access. Contact admin.',
+      );
 
     // Return value → becomes req.user → @CurrentUser() reads this
     return {
       sub: user.id,
       email: user.email,
       role: user.role,
-      companyId: user.companyId,
-      companyType: user.company.type,
+      companyIds,
       firstName: user.firstName,
       lastName: user.lastName,
     };

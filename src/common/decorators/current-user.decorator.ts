@@ -1,11 +1,11 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import { Role } from '@prisma/client';
 
 export interface JwtPayload {
   sub: string;
   email: string;
-  role: string;
-  companyId: string;
-  companyType: string;
+  role: Role;
+  companyIds: string[];
   firstName: string;
   lastName: string;
 }

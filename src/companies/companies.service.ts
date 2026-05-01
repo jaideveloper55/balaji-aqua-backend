@@ -1,12 +1,15 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
+import type { JwtPayload } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class CompaniesService {
@@ -15,9 +18,10 @@ export class CompaniesService {
   constructor(private prisma: PrismaService) {}
 
   // ─── CREATE ───────────────────────────────────────────────────────────────
-  // SUPER_ADMIN creates a new company
+  // SUPER_ADMIN creates a new company.
+  // Normally companies come from prisma/seed.ts — this endpoint exists only
+  // for future expansion (friend opens a 3rd business).
   async create(dto: CreateCompanyDto) {
-    // Check duplicate email
     if (dto.email) {
       const exists = await this.prisma.company.findUnique({
         where: { email: dto.email },
@@ -26,7 +30,6 @@ export class CompaniesService {
         throw new ConflictException(`Email ${dto.email} already registered`);
     }
 
-    // Check duplicate GST
     if (dto.gstNumber) {
       const exists = await this.prisma.company.findFirst({
         where: { gstNumber: dto.gstNumber },
@@ -53,13 +56,11 @@ export class CompaniesService {
   }
 
   // ─── FIND ALL ─────────────────────────────────────────────────────────────
-  // SUPER_ADMIN sees all companies
-  // ADMIN sees only their own company
-  async findAll(companyId?: string) {
-    // If companyId provided → filter to that company only (ADMIN)
-    // If not → return all (SUPER_ADMIN)
+  // SUPER_ADMIN passes undefined → returns ALL companies
+  // ADMIN passes their companyIds[] → returns only those companies
+  async findAll(companyIds?: string[]) {
     return this.prisma.company.findMany({
-      where: companyId ? { id: companyId } : undefined,
+      where: companyIds ? { id: { in: companyIds } } : undefined,
       select: {
         id: true,
         name: true,
@@ -71,19 +72,22 @@ export class CompaniesService {
         gstNumber: true,
         isActive: true,
         createdAt: true,
-        // Count users in each company
-        _count: { select: { users: true } },
+        // CHANGED: users → userCompanies (count of users with access to this company)
+        _count: { select: { userCompanies: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   // ─── FIND ONE ─────────────────────────────────────────────────────────────
-  async findOne(id: string) {
+  // SUPER_ADMIN can view any; ADMIN can only view companies they're assigned to
+  async findOne(id: string, user: JwtPayload) {
+    this.assertCompanyAccess(id, user);
+
     const company = await this.prisma.company.findUnique({
       where: { id },
       include: {
-        _count: { select: { users: true } },
+        _count: { select: { userCompanies: true } },
       },
     });
 
@@ -92,30 +96,70 @@ export class CompaniesService {
   }
 
   // ─── UPDATE ───────────────────────────────────────────────────────────────
-  async update(id: string, dto: UpdateCompanyDto) {
-    await this.findOne(id); // throws 404 if not found
+  async update(id: string, dto: UpdateCompanyDto, user: JwtPayload) {
+    this.assertCompanyAccess(id, user);
+
+    // Verify company exists before updating
+    const existing = await this.prisma.company.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException(`Company ${id} not found`);
+
+    // If email is being changed, check it's not taken by another company
+    if (dto.email && dto.email !== existing.email) {
+      const emailTaken = await this.prisma.company.findUnique({
+        where: { email: dto.email },
+      });
+      if (emailTaken && emailTaken.id !== id)
+        throw new ConflictException(`Email ${dto.email} already registered`);
+    }
+
+    // If GST is being changed, check uniqueness
+    if (dto.gstNumber && dto.gstNumber !== existing.gstNumber) {
+      const gstTaken = await this.prisma.company.findFirst({
+        where: { gstNumber: dto.gstNumber, NOT: { id } },
+      });
+      if (gstTaken)
+        throw new ConflictException(`GST ${dto.gstNumber} already registered`);
+    }
 
     const company = await this.prisma.company.update({
       where: { id },
       data: dto,
     });
 
-    this.logger.log(`✅ Company updated: ${company.name}`);
+    this.logger.log(`✅ Company updated: ${company.name} by ${user.email}`);
     return company;
   }
 
   // ─── DEACTIVATE ───────────────────────────────────────────────────────────
-  // Soft delete — sets isActive: false instead of deleting
-  // WHY: Preserve historical data (orders, invoices, etc.)
+  // Soft delete — sets isActive: false instead of deleting.
+  // WHY: Preserves historical data (orders, invoices, customer ledger).
+  // SUPER_ADMIN only (locked at controller via @Roles).
   async deactivate(id: string) {
-    await this.findOne(id);
+    const existing = await this.prisma.company.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException(`Company ${id} not found`);
+
+    if (!existing.isActive) {
+      return { message: `Company ${existing.name} is already deactivated` };
+    }
 
     const company = await this.prisma.company.update({
       where: { id },
       data: { isActive: false },
     });
 
-    this.logger.log(`⚠️ Company deactivated: ${company.name}`);
+    this.logger.log(`⚠️  Company deactivated: ${company.name}`);
     return { message: `Company ${company.name} deactivated successfully` };
+  }
+
+  // ─── PRIVATE HELPERS ──────────────────────────────────────────────────────
+
+  // Throws ForbiddenException if user doesn't have access to this company.
+  // SUPER_ADMIN bypasses (can access any company).
+  private assertCompanyAccess(companyId: string, user: JwtPayload) {
+    if (user.role === Role.SUPER_ADMIN) return; // bypass
+
+    if (!user.companyIds.includes(companyId)) {
+      throw new ForbiddenException('No access to this company');
+    }
   }
 }

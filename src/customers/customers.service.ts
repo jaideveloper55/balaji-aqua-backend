@@ -12,7 +12,10 @@ import {
 } from './dto/Update query customer.dto';
 import { QueryLedgerDto } from './dto/query-ledger.dto';
 import { CreateLedgerEntryDto } from './dto/customer-ledger.dto';
-import { CreateCustomerPricingDto, UpdateCustomerPricingDto } from './dto/customer-pricing.dto';
+import {
+  CreateCustomerPricingDto,
+  UpdateCustomerPricingDto,
+} from './dto/customer-pricing.dto';
 
 @Injectable()
 export class CustomersService {

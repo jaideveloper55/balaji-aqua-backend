@@ -35,11 +35,16 @@ export class JwtRefreshStrategy extends PassportStrategy(
       throw new UnauthorizedException('Refresh token not found');
     }
 
+    // CHANGED: include userCompanies instead of single company
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {
-        company: {
-          select: { id: true, type: true, isActive: true },
+        userCompanies: {
+          include: {
+            company: {
+              select: { id: true, isActive: true },
+            },
+          },
         },
       },
     });
@@ -59,12 +64,23 @@ export class JwtRefreshStrategy extends PassportStrategy(
       throw new UnauthorizedException('Invalid refresh token. Login again.');
     }
 
+    // CHANGED: collect ALL active companies the user has access to
+    const companyIds = user.userCompanies
+      .filter((uc) => uc.company.isActive)
+      .map((uc) => uc.company.id);
+
+    if (companyIds.length === 0) {
+      throw new UnauthorizedException(
+        'No active company access. Contact admin.',
+      );
+    }
+
+    // Returned object becomes req.user — must match JwtPayload shape
     return {
       sub: user.id,
       email: user.email,
       role: user.role,
-      companyId: user.companyId,
-      companyType: user.company.type,
+      companyIds, // ← array, not single
       firstName: user.firstName,
       lastName: user.lastName,
     };

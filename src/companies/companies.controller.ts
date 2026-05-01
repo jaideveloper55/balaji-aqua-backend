@@ -34,7 +34,9 @@ export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
   // ─── POST /companies ───────────────────────────────────────────────────────
-  // SUPER_ADMIN only — creates new company
+  // SUPER_ADMIN only.
+  // Note: Normally companies are seeded in prisma/seed.ts. This endpoint
+  // exists only for future expansion (e.g. friend opens a 3rd business).
   @Post()
   @Roles(Role.SUPER_ADMIN)
   @HttpCode(HttpStatus.CREATED)
@@ -47,45 +49,56 @@ export class CompaniesController {
   }
 
   // ─── GET /companies ────────────────────────────────────────────────────────
-  // SUPER_ADMIN → all companies
-  // ADMIN → only their company
+  // SUPER_ADMIN → all companies in the system
+  // ADMIN       → only companies they have access to (via UserCompany)
   @Get()
   @Roles(Role.SUPER_ADMIN, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'List companies — SUPER_ADMIN sees all, ADMIN sees own',
+    summary: 'List companies — SUPER_ADMIN sees all, ADMIN sees their own',
   })
   @ApiResponse({ status: 200, description: 'List of companies.' })
   findAll(@CurrentUser() user: JwtPayload) {
-    // SUPER_ADMIN gets all, ADMIN gets only their company
-    const companyId =
-      user.role === Role.SUPER_ADMIN ? undefined : user.companyId;
-    return this.companiesService.findAll(companyId);
+    // CHANGED: companyIds[] (array) instead of single companyId
+    // SUPER_ADMIN passes undefined → service returns ALL companies
+    // ADMIN passes their accessible companyIds → service filters by them
+    const companyIds =
+      user.role === Role.SUPER_ADMIN ? undefined : user.companyIds;
+    return this.companiesService.findAll(companyIds);
   }
 
   // ─── GET /companies/:id ────────────────────────────────────────────────────
+  // ADMIN can only view companies they have access to
   @Get(':id')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get company by ID' })
   @ApiResponse({ status: 200, description: 'Company details.' })
+  @ApiResponse({ status: 403, description: 'No access to this company.' })
   @ApiResponse({ status: 404, description: 'Company not found.' })
-  findOne(@Param('id') id: string) {
-    return this.companiesService.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    // SUPER_ADMIN can view anything; ADMIN restricted to assigned companies
+    return this.companiesService.findOne(id, user);
   }
 
   // ─── PATCH /companies/:id ──────────────────────────────────────────────────
+  // ADMIN can edit companies they're assigned to; SUPER_ADMIN edits any
   @Patch(':id')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update company details' })
   @ApiResponse({ status: 200, description: 'Company updated.' })
-  update(@Param('id') id: string, @Body() dto: UpdateCompanyDto) {
-    return this.companiesService.update(id, dto);
+  @ApiResponse({ status: 403, description: 'No access to this company.' })
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCompanyDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.companiesService.update(id, dto, user);
   }
 
   // ─── DELETE /companies/:id ─────────────────────────────────────────────────
-  // Soft delete — sets isActive: false
+  // Soft delete — sets isActive: false (preserves all historical data)
   @Delete(':id')
   @Roles(Role.SUPER_ADMIN)
   @HttpCode(HttpStatus.OK)

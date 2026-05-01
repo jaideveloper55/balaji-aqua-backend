@@ -1,6 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MaxLength,
@@ -8,10 +8,18 @@ import {
 } from 'class-validator';
 
 export class ChangePasswordDto {
-  @ApiProperty({ example: 'OldPass@123' })
+  // OPTIONAL: required when user is changing their OWN password.
+  // SUPER_ADMIN resetting someone else's password skips this check (admin reset).
+  // Service layer enforces: if currentUser.id === target.id then this MUST be present.
+  @ApiPropertyOptional({
+    example: 'OldPass@123',
+    description:
+      'Required when changing your own password. Omit when SUPER_ADMIN ' +
+      'resets another user (admin reset for forgotten passwords).',
+  })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  currentPassword: string;
+  currentPassword?: string;
 
   @ApiProperty({ example: 'NewPass@456' })
   @IsString()
