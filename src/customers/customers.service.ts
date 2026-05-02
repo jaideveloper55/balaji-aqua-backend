@@ -43,7 +43,7 @@ export class CustomersService {
         ...createCustomerDto,
         customerCode,
         companyId,
-        status: 'PENDING',
+        status: 'ACTIVE',
       },
     });
   }
