@@ -72,40 +72,52 @@ export class CustomersService {
       ];
     }
 
-    const [customers, total, stats] = await Promise.all([
-      this.prisma.customer.findMany({
-        where,
-        orderBy: { [sortBy]: sortOrder },
-        skip: (page - 1) * limit,
-        take: limit,
-        select: {
-          id: true,
-          customerCode: true,
-          name: true,
-          phone: true,
-          email: true,
-          type: true,
-          status: true,
-          outstandingBalance: true,
-          deliveryFrequency: true,
-          paymentMode: true,
-          createdAt: true,
-        },
-      }),
-      this.prisma.customer.count({ where }),
-      this.prisma.customer.groupBy({
-        by: ['status'],
-        where: { companyId },
-        _count: true,
-      }),
-    ]);
+    // Start of current month for the "new this month" stat
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const statsMap = { total, active: 0, inactive: 0, pending: 0 };
-    stats.forEach((s) => {
-      if (s.status === 'ACTIVE') statsMap.active = s._count;
-      if (s.status === 'INACTIVE') statsMap.inactive = s._count;
-      if (s.status === 'PENDING') statsMap.pending = s._count;
-    });
+    const [customers, total, outstandingAggregate, newThisMonth] =
+      await Promise.all([
+        this.prisma.customer.findMany({
+          where,
+          orderBy: { [sortBy]: sortOrder },
+          skip: (page - 1) * limit,
+          take: limit,
+          select: {
+            id: true,
+            customerCode: true,
+            name: true,
+            phone: true,
+            email: true,
+            type: true,
+            status: true,
+            outstandingBalance: true,
+            deliveryFrequency: true,
+            paymentMode: true,
+            createdAt: true,
+          },
+        }),
+        this.prisma.customer.count({ where }),
+        // Sum + count of customers with outstanding > 0
+        this.prisma.customer.aggregate({
+          where: { companyId, outstandingBalance: { gt: 0 } },
+          _sum: { outstandingBalance: true },
+          _count: true,
+        }),
+        // Customers added since the 1st of this month
+        this.prisma.customer.count({
+          where: { companyId, createdAt: { gte: startOfMonth } },
+        }),
+      ]);
+
+    const statsMap = {
+      total,
+      totalOutstanding: Number(
+        outstandingAggregate._sum.outstandingBalance ?? 0,
+      ),
+      customersWithDues: outstandingAggregate._count,
+      newThisMonth,
+    };
 
     return {
       data: customers,
@@ -239,7 +251,17 @@ export class CustomersService {
 
   // STATS — GET /customers/stats
   async getStats(companyId: string) {
-    const [total, byStatus, byType, topOutstanding] = await Promise.all([
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      total,
+      byStatus,
+      byType,
+      topOutstanding,
+      outstandingAggregate,
+      newThisMonth,
+    ] = await Promise.all([
       this.prisma.customer.count({ where: { companyId } }),
       this.prisma.customer.groupBy({
         by: ['status'],
@@ -262,8 +284,27 @@ export class CustomersService {
           outstandingBalance: true,
         },
       }),
+      this.prisma.customer.aggregate({
+        where: { companyId, outstandingBalance: { gt: 0 } },
+        _sum: { outstandingBalance: true },
+        _count: true,
+      }),
+      this.prisma.customer.count({
+        where: { companyId, createdAt: { gte: startOfMonth } },
+      }),
     ]);
-    return { total, byStatus, byType, topOutstanding };
+
+    return {
+      total,
+      totalOutstanding: Number(
+        outstandingAggregate._sum.outstandingBalance ?? 0,
+      ),
+      customersWithDues: outstandingAggregate._count,
+      newThisMonth,
+      byStatus,
+      byType,
+      topOutstanding,
+    };
   }
 
   // PRICING TAB METHODS

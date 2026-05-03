@@ -1,12 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsEmail,
   IsEnum,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Length,
   Matches,
+  Min,
 } from 'class-validator';
 
 export enum CustomerType {
@@ -56,8 +59,6 @@ export class CreateCustomerDto {
   @Matches(/^(\+91[\-\s]?)?[0]?(91)?[789]\d{9}$/, {
     message: 'Please provide a valid Indian mobile number',
   })
-  // WHY REGEX? Phone numbers look like text but have a specific format.
-  // This regex validates Indian numbers like: 9876543210, +91 98765 43210
   phone: string;
 
   @ApiPropertyOptional({
@@ -65,8 +66,6 @@ export class CreateCustomerDto {
     example: 'rajesh@example.com',
   })
   @IsOptional()
-  // IsOptional() means: if the field is not sent, skip all other validations
-  // This matches your form where email is optional
   @IsEmail({}, { message: 'Please provide a valid email address' })
   email?: string;
 
@@ -80,7 +79,7 @@ export class CreateCustomerDto {
   })
   type: CustomerType;
 
-  // ---- STEP 2: DELIVERY SETTINGS ----
+  // ---- STEP 2: DELIVERY & PAYMENT ----
 
   @ApiProperty({
     description: 'How often the customer wants delivery',
@@ -98,14 +97,32 @@ export class CreateCustomerDto {
   @IsEnum(PaymentMode)
   paymentMode: PaymentMode;
 
+  // Opening balance / outstanding amount at onboarding.
+  // Stored on Customer.outstandingBalance and shown in the list table.
+  @ApiPropertyOptional({
+    description:
+      'Opening balance / outstanding amount at customer onboarding (in INR). Defaults to 0.',
+    example: 0,
+    default: 0,
+    minimum: 0,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber(
+    { maxDecimalPlaces: 2 },
+    { message: 'Outstanding must be a number with up to 2 decimal places' },
+  )
+  @Min(0, { message: 'Outstanding cannot be negative' })
+  outstandingBalance?: number;
+
   @ApiPropertyOptional({
     description: 'Special delivery instructions',
     example: 'Leave at gate if not home',
-    maxLength: 300,
+    maxLength: 500,
   })
   @IsOptional()
   @IsString()
-  @Length(0, 300)
+  @Length(0, 500)
   notes?: string;
 
   // ---- STEP 3: ADDRESS ----
