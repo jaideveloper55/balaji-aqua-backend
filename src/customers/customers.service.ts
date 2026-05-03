@@ -54,6 +54,8 @@ export class CustomersService {
       status,
       type,
       search,
+      fromDate,
+      toDate,
       page = 1,
       limit = 10,
       sortBy = 'createdAt',
@@ -63,6 +65,21 @@ export class CustomersService {
     const where: any = { companyId };
     if (status) where.status = status;
     if (type) where.type = type;
+
+    // 🆕 Date range filter on createdAt
+    if (fromDate || toDate) {
+      where.createdAt = {};
+      if (fromDate) {
+        where.createdAt.gte = new Date(fromDate);
+      }
+      if (toDate) {
+        // Make end date inclusive — set to 23:59:59 of that day
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },

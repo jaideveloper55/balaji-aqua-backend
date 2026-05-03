@@ -1,7 +1,21 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 import { PartialType } from '@nestjs/swagger';
-import { CreateCustomerDto, CustomerStatus } from './create-customer.dto';
+import { Type } from 'class-transformer';
+import {
+  CreateCustomerDto,
+  CustomerStatus,
+  CustomerType,
+} from './create-customer.dto';
 
 export class UpdateCustomerDto extends PartialType(CreateCustomerDto) {
   @ApiPropertyOptional({
@@ -14,13 +28,9 @@ export class UpdateCustomerDto extends PartialType(CreateCustomerDto) {
   status?: CustomerStatus;
 }
 
-import { IsString, IsNumber, Min, Max, IsPositive } from 'class-validator';
-import { Type } from 'class-transformer';
-import { CustomerType } from './create-customer.dto';
-
 export class QueryCustomerDto {
   @ApiPropertyOptional({
-    description: 'Filter by customer status',
+    description: 'Filter by customer status (kept for backward compatibility)',
     enum: CustomerStatus,
   })
   @IsOptional()
@@ -36,12 +46,29 @@ export class QueryCustomerDto {
   type?: CustomerType;
 
   @ApiPropertyOptional({
-    description: 'Search by name, phone, or customer code',
+    description: 'Search by name, phone, email, or customer code',
     example: 'Rajesh',
   })
   @IsOptional()
   @IsString()
   search?: string;
+
+  // 🆕 DATE RANGE FILTERS — filter by customer createdAt
+  @ApiPropertyOptional({
+    description: 'Filter customers joined on or after this date (YYYY-MM-DD)',
+    example: '2026-01-01',
+  })
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter customers joined on or before this date (YYYY-MM-DD)',
+    example: '2026-12-31',
+  })
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
 
   @ApiPropertyOptional({
     description: 'Page number for pagination',
@@ -64,7 +91,6 @@ export class QueryCustomerDto {
   @IsNumber()
   @Min(1)
   @Max(100)
-  // Max 100 to prevent someone doing ?limit=99999 and crashing your server
   limit?: number = 10;
 
   @ApiPropertyOptional({
