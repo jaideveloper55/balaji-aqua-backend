@@ -53,7 +53,6 @@ export class QueryCustomerDto {
   @IsString()
   search?: string;
 
-  // 🆕 DATE RANGE FILTERS — filter by customer createdAt
   @ApiPropertyOptional({
     description: 'Filter customers joined on or after this date (YYYY-MM-DD)',
     example: '2026-01-01',

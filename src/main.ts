@@ -35,10 +35,7 @@ async function bootstrap() {
     .setTitle('Balaji Aqua ERP API')
     .setDescription('Water Plant & Beverage ERP')
     .setVersion('1.0')
-    .addBearerAuth(
-      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-      'JWT-auth',
-    )
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
     .addTag('Auth', 'Login and register')
     .addTag('Users', 'User management')
     .addTag('Customers', 'Customer management')

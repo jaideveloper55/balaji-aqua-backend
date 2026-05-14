@@ -190,7 +190,7 @@ export class AuthService {
   // ─── CREATE USER (Super Admin only) ───────────────────────────────────────
   // Super admin (your friend) creates ADMIN / STAFF / DELIVERY_BOY users
   // from /settings/users in the dashboard.
-  // No invite emails — small business, friend just shares credentials directly.
+
   async createUser(creatorId: string, dto: CreateUserDto) {
     // Verify caller is SUPER_ADMIN
     const creator = await this.prisma.user.findUnique({

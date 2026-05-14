@@ -12,6 +12,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { UsersModule } from './users/users.module';
 import { CustomersModule } from './customers/customers.module';
 import { ProductsModule } from './products/products.module';
+import { BillingModule } from './billing/billing.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ProductsModule } from './products/products.module';
     CompaniesModule,
     CustomersModule,
     ProductsModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [

@@ -66,7 +66,6 @@ export class CustomersService {
     if (status) where.status = status;
     if (type) where.type = type;
 
-    // 🆕 Date range filter on createdAt
     if (fromDate || toDate) {
       where.createdAt = {};
       if (fromDate) {

@@ -7,15 +7,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── ENUMS ──────────────────────────────────────────────────────────────────
-
 enum CompanyType {
   WATER_PLANT
   BEVERAGE
 }
 
 enum Role {
-  SUPER_ADMIN 
+  SUPER_ADMIN
   ADMIN        // company manager
   STAFF        // office staff
   DELIVERY_BOY // only sees assigned deliveries
@@ -60,7 +58,6 @@ enum LedgerEntryType {
   DEBIT_NOTE
 }
 
-
 enum ProductStatus {
   ACTIVE
   INACTIVE
@@ -76,10 +73,20 @@ enum ProductUnit {
   KG
 }
 
+enum InvoiceStatus {
+  DRAFT
+  CONFIRMED
+  PAID
+  PARTIAL
+  CANCELLED
+}
+
+enum InvoiceType {
+  SALE
+  WALK_IN
+}
 
 // ─── COMPANY ────────────────────────────────────────────────────────────────
-// Your friend has 2 companies: Water Plant + Beverages
-// Each is a separate company row, seeded once on day one
 model Company {
   id        String      @id @default(uuid())
   name      String
@@ -96,29 +103,34 @@ model Company {
 
   userCompanies UserCompany[]
   customers     Customer[]
-
-  categories Category[]
-  products   Product[]
+  categories    Category[]
+  products      Product[]
+  invoices      Invoice[]
+  payments      Payment[]
+  carts         Cart[]
 
   @@map("companies")
 }
 
 // ─── USER ───────────────────────────────────────────────────────────────────
 model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
+  id           String  @id @default(uuid())
+  email        String  @unique
   password     String
   firstName    String
   lastName     String
-  phone        String?   @unique
-  role         Role      @default(STAFF)
+  phone        String? @unique
+  role         Role    @default(STAFF)
   gender       Gender?
   address      String?
   city         String?
-  isActive     Boolean   @default(true)
+  isActive     Boolean @default(true)
   refreshToken String?
 
-  userCompanies UserCompany[] // which companies this user can access
+  userCompanies UserCompany[]
+  invoices      Invoice[]     @relation("InvoiceCreatedBy")
+  payments      Payment[]     @relation("PaymentCreatedBy")
+  carts         Cart[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -127,8 +139,7 @@ model User {
   @@map("users")
 }
 
-// ─── USER ↔ COMPANY JOIN TABLE ───────────────────────────────────────────────
-
+// ─── USER COMPANY JOIN TABLE ────────────────────────────────────────────────
 model UserCompany {
   userId    String
   companyId String
@@ -137,7 +148,7 @@ model UserCompany {
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  @@id([userId, companyId])   // prevents duplicate (user, company) pairs
+  @@id([userId, companyId])
   @@index([companyId])
   @@map("user_companies")
 }
@@ -149,13 +160,12 @@ model UserCompany {
 model Customer {
   id           String         @id @default(cuid())
   customerCode String
-  // ↑ NOT globally @unique — see @@unique([customerCode, companyId]) below
 
-  name         String
-  phone        String
-  email        String?
-  type         CustomerType   @default(RESIDENTIAL)
-  status       CustomerStatus @default(PENDING)
+  name   String
+  phone  String
+  email  String?
+  type   CustomerType   @default(RESIDENTIAL)
+  status CustomerStatus @default(PENDING)
 
   deliveryFrequency DeliveryFrequency @default(ON_DEMAND)
   paymentMode       PaymentMode       @default(CASH)
@@ -173,8 +183,11 @@ model Customer {
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
 
-  pricing CustomerPricing[]
-  ledger  CustomerLedger[]
+  pricing  CustomerPricing[]
+  ledger   CustomerLedger[]
+  invoices Invoice[]
+  payments Payment[]
+  carts    Cart[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -246,7 +259,6 @@ model CustomerLedger {
   @@map("customer_ledger")
 }
 
-
 // ─── CATEGORY ───────────────────────────────────────────────────────────────
 // Categories are scoped per company.
 // e.g. Water Plant has [Water Can, Bottle, Filter] — Beverage has [Soft Drink, Energy Drink]
@@ -254,7 +266,7 @@ model Category {
   id          String  @id @default(cuid())
   name        String
   slug        String
-  color       String  @default("#2563eb") 
+  color       String  @default("#2563eb")
   bg          String  @default("#dbeafe")
   description String?
   isActive    Boolean @default(true)
@@ -268,55 +280,236 @@ model Category {
   updatedAt DateTime @updatedAt
 
   @@unique([slug, companyId])
-
-
   @@unique([name, companyId])
-
-
   @@index([companyId])
   @@index([companyId, isActive])
   @@map("categories")
 }
-
 
 // ─── PRODUCT ────────────────────────────────────────────────────────────────
 // Products are scoped per company. Each product belongs to exactly one category.
 model Product {
   id          String        @id @default(cuid())
   name        String
-  sku         String      
+  sku         String
   description String?
-  hsn         String?    
+  hsn         String?
 
-  unit        ProductUnit   @default(PCS)
-  status      ProductStatus @default(ACTIVE)
+  unit   ProductUnit   @default(PCS)
+  status ProductStatus @default(ACTIVE)
 
   // ─── Pricing ───
-  basePrice    Float    
-  costPrice    Float    @default(0) 
-  gstRate      Float    @default(0) 
+  basePrice Float
+  costPrice Float @default(0)
+  gstRate   Float @default(0)
 
   // ─── Inventory ───
-  stock        Int      @default(0)
-  minStock     Int      @default(0)
-
+  stock    Int @default(0)
+  minStock Int @default(0)
 
   // ─── Relations ───
   categoryId String
   category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
- 
 
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  invoiceItems InvoiceItem[]
+  cartItems    CartItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([sku, companyId])
-
-
   @@index([companyId])
   @@index([companyId, status])
   @@index([categoryId])
   @@map("products")
+}
+
+// ─── INVOICE ────────────────────────────────────────────────────────────────
+model Invoice {
+  id            String @id @default(cuid())
+  invoiceNumber String
+
+  // Customer can be null for walk-in sales
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  // Walk-in customer info (used when customerId is null)
+  walkInName  String?
+  walkInPhone String?
+
+  invoiceType InvoiceType   @default(SALE)
+  status      InvoiceStatus @default(CONFIRMED)
+
+  invoiceDate DateTime  @default(now())
+  dueDate     DateTime?
+
+  // Amounts
+  subtotal    Float @default(0)
+  cgst        Float @default(0) // Central GST (9%)
+  sgst        Float @default(0) // State GST (9%)
+  igst        Float @default(0) // Interstate GST (18%) - used when inter-state
+  totalAmount Float @default(0) // subtotal + all taxes
+  paidAmount  Float @default(0) // how much has been paid so far
+  balanceDue  Float @default(0) // totalAmount - paidAmount
+
+  gstEnabled Boolean @default(false) // was GST applied on this invoice?
+  gstRate    Float   @default(18) // GST % used (18% default in India)
+  notes      String?
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([invoiceNumber, companyId])
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, invoiceDate])
+  @@index([customerId])
+  @@map("invoices")
+}
+
+// ─── INVOICE ITEM ───────────────────────────────────────────────────────────
+model InvoiceItem {
+  id String @id @default(cuid())
+
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  // Snapshot values at time of sale (prices can change later, invoice must not)
+  productName String // snapshot of product name
+  sku         String // snapshot of SKU
+  unit        String // snapshot of unit (PCS, LITRE, etc.)
+
+  quantity  Int
+  unitPrice Float // price per unit (may be custom price for this customer)
+  discount  Float @default(0) // discount amount (not %)
+  taxAmount Float @default(0) // GST on this line item
+  lineTotal Float // (unitPrice × qty) - discount + tax
+
+  companyId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([invoiceId])
+  @@index([companyId])
+  @@index([productId])
+  @@map("invoice_items")
+}
+
+// ─── PAYMENT ────────────────────────────────────────────────────────────────
+model Payment {
+  id            String @id @default(cuid())
+  paymentNumber String
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  invoiceId String?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id])
+
+  amount      Float
+  paymentMode PaymentMode // CASH, UPI, BANK_TRANSFER, CREDIT (reusing existing enum)
+  referenceId String?
+  notes       String?
+
+  paymentDate DateTime @default(now())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("PaymentCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([paymentNumber, companyId])
+  @@index([companyId])
+  @@index([companyId, paymentDate])
+  @@index([customerId])
+  @@index([invoiceId])
+  @@map("payments")
+}
+
+// ─── CART ───────────────────────────────────────────────────────────────────
+model Cart {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // Customer info (set when customer is selected in POS)
+  customerId  String?
+  customer    Customer?   @relation(fields: [customerId], references: [id])
+  walkInName  String?
+  walkInPhone String?
+  invoiceType InvoiceType @default(SALE)
+
+  // Cart-level settings (the toggles/fields in the cart panel)
+  gstEnabled Boolean @default(false)
+  gstRate    Float   @default(18)
+  discount   Float   @default(0)
+  notes      String?
+
+  // Calculated totals (recalculated every time cart changes)
+  subtotal    Float @default(0)
+  cgst        Float @default(0)
+  sgst        Float @default(0)
+  totalAmount Float @default(0)
+
+  items CartItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, companyId])
+  @@index([companyId])
+  @@map("carts")
+}
+
+// ─── CART ITEM ──────────────────────────────────────────────────────────────
+model CartItem {
+  id String @id @default(cuid())
+
+  cartId String
+  cart   Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Snapshot at time of adding (in case price changes while cart is open)
+  productName String
+  sku         String
+  unit        String
+
+  quantity  Int
+  unitPrice Float // effective price (custom or base)
+  lineTotal Float // quantity × unitPrice (before tax)
+
+  companyId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Same product cannot appear twice in same cart — instead qty increases
+  @@unique([cartId, productId])
+  @@index([cartId])
+  @@map("cart_items")
 }
