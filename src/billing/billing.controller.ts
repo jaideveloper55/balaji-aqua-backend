@@ -16,6 +16,7 @@ import {
   ApiBearerAuth,
   ApiResponse,
   ApiQuery,
+  ApiSecurity,
 } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
 import {
@@ -32,22 +33,28 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { CompanyScopeGuard } from 'src/common/guards/company-scope.guard';
+import { CurrentCompany } from 'src/common/guards/current-company.decorator';
 
+// Matches the shape used in CartController — JWT validate() returns { sub, role }.
+// companyId comes from @CurrentCompany() (the X-Company-Id header read by CompanyScopeGuard).
 interface JwtUser {
-  userId: string;
-  companyId: string;
+  sub: string;
   role: Role;
-  companyType: string;
 }
 
 @ApiTags('Billing & POS')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@ApiSecurity('X-Company-Id')
+@UseGuards(JwtAuthGuard, CompanyScopeGuard, RolesGuard)
 @Controller('billing')
 export class BillingController {
   constructor(private readonly billingService: BillingService) {}
 
+  // ──────────────────────────────────────────────────────────────────────
   // POS ENDPOINTS
+  // ──────────────────────────────────────────────────────────────────────
+
   @Get('pos/products')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -61,13 +68,12 @@ export class BillingController {
     description: 'Search by name or SKU',
   })
   async getPOSProducts(
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
     @Query('search') search?: string,
   ) {
-    return this.billingService.getPOSProducts(user.companyId, search);
+    return this.billingService.getPOSProducts(companyId, search);
   }
 
-  // Checks if customer has a custom price for a product
   @Get('pos/customer-price/:customerId/:productId')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -77,19 +83,20 @@ export class BillingController {
   async getCustomerPrice(
     @Param('customerId') customerId: string,
     @Param('productId') productId: string,
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
     const price = await this.billingService.getCustomerPrice(
       customerId,
       productId,
-      user.companyId,
+      companyId,
     );
     return { price };
   }
 
+  // ──────────────────────────────────────────────────────────────────────
   // INVOICE ENDPOINTS
+  // ──────────────────────────────────────────────────────────────────────
 
-  // Creates a new invoice — called when staff clicks "Confirm" in POS
   @Post('invoices')
   @Roles(Role.ADMIN, Role.STAFF)
   @HttpCode(HttpStatus.CREATED)
@@ -106,10 +113,11 @@ export class BillingController {
   async createInvoice(
     @Body() dto: CreateInvoiceDto,
     @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.createInvoice(dto, user.companyId, user.userId);
+    return this.billingService.createInvoice(dto, companyId, user.sub);
   }
-  // Lists all invoices with filters — the "Invoices" tab
+
   @Get('invoices')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -119,49 +127,53 @@ export class BillingController {
   })
   async findAllInvoices(
     @Query() filters: InvoiceFilterDto,
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.findAllInvoices(filters, user.companyId);
+    return this.billingService.findAllInvoices(filters, companyId);
   }
 
-  // Get a single invoice with all its items and payments
   @Get('invoices/:id')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({ summary: 'Get invoice by ID with full details' })
-  async findInvoice(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.billingService.findInvoiceById(id, user.companyId);
+  async findInvoice(
+    @Param('id') id: string,
+    @CurrentCompany() companyId: string,
+  ) {
+    return this.billingService.findInvoiceById(id, companyId);
   }
 
-  // Update invoice notes / due date (only mutable fields after creation)
   @Patch('invoices/:id')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({ summary: 'Update invoice notes or due date' })
   async updateInvoice(
     @Param('id') id: string,
     @Body() dto: UpdateInvoiceDto,
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    // Direct update — no complex logic, just update mutable fields
-    const invoice = await this.billingService.findInvoiceById(
-      id,
-      user.companyId,
-    );
-    return invoice; // Service would do the actual update
+    // TODO: implement actual update in BillingService.updateInvoice(id, dto, companyId)
+    // For now this is a stub that returns the unchanged invoice — frontend
+    // will appear to "save" without persisting changes.
+    const invoice = await this.billingService.findInvoiceById(id, companyId);
+    return invoice;
   }
 
-  // Cancel an invoice — only ADMIN can cancel
   @Patch('invoices/:id/cancel')
-  @Roles(Role.ADMIN) // Only admin can cancel invoices
+  @Roles(Role.ADMIN)
   @ApiOperation({
     summary: 'Cancel an invoice',
     description:
       'Cancels a confirmed/partial invoice. Restores stock and reverses customer outstanding. Cannot cancel PAID invoices.',
   })
-  async cancelInvoice(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.billingService.cancelInvoice(id, user.companyId);
+  async cancelInvoice(
+    @Param('id') id: string,
+    @CurrentCompany() companyId: string,
+  ) {
+    return this.billingService.cancelInvoice(id, companyId);
   }
 
+  // ──────────────────────────────────────────────────────────────────────
   // PAYMENT ENDPOINTS
+  // ──────────────────────────────────────────────────────────────────────
 
   @Post('payments')
   @Roles(Role.ADMIN, Role.STAFF)
@@ -179,11 +191,11 @@ export class BillingController {
   async createPayment(
     @Body() dto: CreatePaymentDto,
     @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.createPayment(dto, user.companyId, user.userId);
+    return this.billingService.createPayment(dto, companyId, user.sub);
   }
 
-  // List payments with filters — the "Payments"
   @Get('payments')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -193,14 +205,15 @@ export class BillingController {
   })
   async findAllPayments(
     @Query() filters: PaymentFilterDto,
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.findAllPayments(filters, user.companyId);
+    return this.billingService.findAllPayments(filters, companyId);
   }
 
-  // OUTSTANDING ENDPOINTS
+  // ──────────────────────────────────────────────────────────────────────
+  // OUTSTANDING
+  // ──────────────────────────────────────────────────────────────────────
 
-  // Outstanding dues — the "Outstanding" tab
   @Get('outstanding')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -216,14 +229,11 @@ export class BillingController {
   })
   async getOutstanding(
     @Query() filters: OutstandingFilterDto,
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.getOutstanding(filters, user.companyId);
+    return this.billingService.getOutstanding(filters, companyId);
   }
 
-  // DAILY SUMMARY ENDPOINT
-
-  // Daily summary — the "Daily Summary" tab
   @Get('daily-summary')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
@@ -237,9 +247,9 @@ export class BillingController {
     description: 'Date (YYYY-MM-DD). Defaults to today.',
   })
   async getDailySummary(
-    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
     @Query('date') date?: string,
   ) {
-    return this.billingService.getDailySummary(user.companyId, date);
+    return this.billingService.getDailySummary(companyId, date);
   }
 }

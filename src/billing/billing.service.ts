@@ -47,42 +47,42 @@ export class BillingService {
   private async generateInvoiceNumber(companyId: string): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const prefix = `INV-${dateStr}-`;
 
-    const startOfDay = new Date(today);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(today);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const count = await this.prisma.invoice.count({
-      where: {
-        companyId,
-        createdAt: { gte: startOfDay, lte: endOfDay },
-      },
+    const last = await this.prisma.invoice.findFirst({
+      where: { companyId, invoiceNumber: { startsWith: prefix } },
+      orderBy: { invoiceNumber: 'desc' },
+      select: { invoiceNumber: true },
     });
 
-    const serial = String(count + 1).padStart(3, '0');
-    return `INV-${dateStr}-${serial}`;
+    let nextSerial = 1;
+    if (last?.invoiceNumber) {
+      const lastSerial = parseInt(last.invoiceNumber.slice(prefix.length), 10);
+      if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
+    }
+
+    return prefix + String(nextSerial).padStart(3, '0');
   }
 
   // ─── HELPER: Generate Payment Number ─────────────────────────────────────
   private async generatePaymentNumber(companyId: string): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const prefix = `PAY-${dateStr}-`;
 
-    const startOfDay = new Date(today);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(today);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const count = await this.prisma.payment.count({
-      where: {
-        companyId,
-        createdAt: { gte: startOfDay, lte: endOfDay },
-      },
+    const last = await this.prisma.payment.findFirst({
+      where: { companyId, paymentNumber: { startsWith: prefix } },
+      orderBy: { paymentNumber: 'desc' },
+      select: { paymentNumber: true },
     });
 
-    const serial = String(count + 1).padStart(3, '0');
-    return `PAY-${dateStr}-${serial}`;
+    let nextSerial = 1;
+    if (last?.paymentNumber) {
+      const lastSerial = parseInt(last.paymentNumber.slice(prefix.length), 10);
+      if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
+    }
+
+    return prefix + String(nextSerial).padStart(3, '0');
   }
 
   // ─── HELPER: Calculate Totals ─────────────────────────────────────────────
@@ -90,11 +90,10 @@ export class BillingService {
   // Previously: items typed as { quantity, unitPrice, discount? } — no productId
   // That caused: "Property 'productId' does not exist on type..."
   private calculateTotals(
-    items: LineItemInput[], // FIX #1: was anonymous type missing productId
+    items: LineItemInput[],
     gstEnabled: boolean,
     gstRate: number,
   ): TotalsResult {
-    // FIX #1: explicit return type
     let subtotal = 0;
 
     const processedItems: ProcessedItem[] = items.map((item) => {
@@ -107,7 +106,7 @@ export class BillingService {
       subtotal += lineAfterDiscount;
 
       return {
-        productId: item.productId, // FIX #1: now included because LineItemInput has it
+        productId: item.productId,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         discount,
@@ -251,6 +250,7 @@ export class BillingService {
             description: `Invoice ${invoiceNumber}`,
             debitAmount: totalAmount,
             creditAmount: 0,
+
             cgst,
             sgst,
             igst,
@@ -331,7 +331,15 @@ export class BillingService {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-          customer: { select: { id: true, name: true, phone: true } },
+          customer: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              type: true,
+              customerCode: true,
+            },
+          },
           items: {
             include: { product: { select: { name: true, sku: true } } },
           },
@@ -527,6 +535,7 @@ export class BillingService {
           customerId: dto.customerId,
           companyId,
           entryType: 'PAYMENT',
+          paymentMode: dto.paymentMode,
           referenceNo: paymentNumber,
           description: invoice
             ? `Payment against ${invoice.invoiceNumber}`

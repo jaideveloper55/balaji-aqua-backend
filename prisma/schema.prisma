@@ -234,6 +234,7 @@ model CustomerLedger {
   id          String          @id @default(cuid())
   customerId  String
   customer    Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  paymentMode PaymentMode? 
   entryType   LedgerEntryType
   referenceNo String
   description String

@@ -21,8 +21,11 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
+import { ApiBearerAuth, ApiSecurity } from '@nestjs/swagger';
 
 @Controller('products')
+@ApiBearerAuth()
+@ApiSecurity('X-Company-Id')
 @UseGuards(JwtAuthGuard, CompanyScopeGuard, RolesGuard)
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}

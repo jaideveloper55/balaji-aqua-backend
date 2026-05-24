@@ -65,20 +65,15 @@ export class CustomersService {
     const where: any = { companyId };
     if (status) where.status = status;
     if (type) where.type = type;
-
     if (fromDate || toDate) {
       where.createdAt = {};
-      if (fromDate) {
-        where.createdAt.gte = new Date(fromDate);
-      }
+      if (fromDate) where.createdAt.gte = new Date(fromDate);
       if (toDate) {
-        // Make end date inclusive — set to 23:59:59 of that day
         const end = new Date(toDate);
         end.setHours(23, 59, 59, 999);
         where.createdAt.lte = end;
       }
     }
-
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
@@ -88,56 +83,31 @@ export class CustomersService {
       ];
     }
 
-    // Start of current month for the "new this month" stat
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const [customers, total, outstandingAggregate, newThisMonth] =
-      await Promise.all([
-        this.prisma.customer.findMany({
-          where,
-          orderBy: { [sortBy]: sortOrder },
-          skip: (page - 1) * limit,
-          take: limit,
-          select: {
-            id: true,
-            customerCode: true,
-            name: true,
-            phone: true,
-            email: true,
-            type: true,
-            status: true,
-            outstandingBalance: true,
-            deliveryFrequency: true,
-            paymentMode: true,
-            createdAt: true,
-          },
-        }),
-        this.prisma.customer.count({ where }),
-        // Sum + count of customers with outstanding > 0
-        this.prisma.customer.aggregate({
-          where: { companyId, outstandingBalance: { gt: 0 } },
-          _sum: { outstandingBalance: true },
-          _count: true,
-        }),
-        // Customers added since the 1st of this month
-        this.prisma.customer.count({
-          where: { companyId, createdAt: { gte: startOfMonth } },
-        }),
-      ]);
-
-    const statsMap = {
-      total,
-      totalOutstanding: Number(
-        outstandingAggregate._sum.outstandingBalance ?? 0,
-      ),
-      customersWithDues: outstandingAggregate._count,
-      newThisMonth,
-    };
+    const [customers, total] = await Promise.all([
+      this.prisma.customer.findMany({
+        where,
+        orderBy: { [sortBy]: sortOrder },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          customerCode: true,
+          name: true,
+          phone: true,
+          email: true,
+          type: true,
+          status: true,
+          outstandingBalance: true,
+          deliveryFrequency: true,
+          paymentMode: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.customer.count({ where }),
+    ]);
 
     return {
       data: customers,
-      stats: statsMap,
       pagination: {
         total,
         page,
@@ -431,14 +401,22 @@ export class CustomersService {
   ) {
     await this.findOne(customerId, companyId);
 
-    const { entryType, search, fromDate, toDate } = query;
+    const { entryType, search } = query;
+
+    const fromDate = query.fromDate ?? query.startDate;
+    const toDate = query.toDate ?? query.endDate;
 
     const where: any = { customerId, companyId };
     if (entryType) where.entryType = entryType;
     if (fromDate || toDate) {
       where.entryDate = {};
       if (fromDate) where.entryDate.gte = new Date(fromDate);
-      if (toDate) where.entryDate.lte = new Date(toDate);
+      if (toDate) {
+        // include the entire end day
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        where.entryDate.lte = end;
+      }
     }
     if (search) {
       where.OR = [
@@ -454,7 +432,6 @@ export class CustomersService {
         orderBy: { entryDate: 'asc' },
       }),
 
-      // Summary cards: Total Debit, Total Credit, Outstanding, Total Entries
       this.prisma.customerLedger.aggregate({
         where: { customerId, companyId },
         _sum: {
@@ -534,7 +511,6 @@ export class CustomersService {
     });
 
     // Keep customer's outstandingBalance in sync
-    // This is the balance shown on the customer list page
     await this.prisma.customer.update({
       where: { id: customerId },
       data: { outstandingBalance: newBalance > 0 ? newBalance : 0 },
@@ -550,14 +526,22 @@ export class CustomersService {
     query: QueryLedgerDto,
   ) {
     await this.findOne(customerId, companyId);
-    const { entryType, fromDate, toDate } = query;
+
+    const { entryType } = query;
+    // Same normalization as getLedger — accept both naming conventions
+    const fromDate = query.fromDate ?? query.startDate;
+    const toDate = query.toDate ?? query.endDate;
 
     const where: any = { customerId, companyId };
     if (entryType) where.entryType = entryType;
     if (fromDate || toDate) {
       where.entryDate = {};
       if (fromDate) where.entryDate.gte = new Date(fromDate);
-      if (toDate) where.entryDate.lte = new Date(toDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        where.entryDate.lte = end;
+      }
     }
 
     const entries = await this.prisma.customerLedger.findMany({

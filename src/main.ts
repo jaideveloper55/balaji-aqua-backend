@@ -36,6 +36,10 @@ async function bootstrap() {
     .setDescription('Water Plant & Beverage ERP')
     .setVersion('1.0')
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
+    .addApiKey(
+      { type: 'apiKey', in: 'header', name: 'X-Company-Id' },
+      'X-Company-Id',
+    )
     .addTag('Auth', 'Login and register')
     .addTag('Users', 'User management')
     .addTag('Customers', 'Customer management')
