@@ -11,7 +11,7 @@ import {
   CheckoutCartDto,
 } from './dto/cart.dto';
 import { BillingService } from './billing.service';
-import { InvoiceType } from '@prisma/client';
+import { InvoiceType, InvoiceStatus, PaymentMode } from '@prisma/client';
 
 @Injectable()
 export class CartService {
@@ -19,26 +19,22 @@ export class CartService {
     private readonly prisma: PrismaService,
     private readonly billingService: BillingService,
   ) {}
-  //  HELPER: Recalculate Cart Totals
+
+  // HELPER: Recalculate Cart Totals
   private calculateCartTotals(
     items: Array<{ quantity: number; unitPrice: number }>,
     gstEnabled: boolean,
     gstRate: number,
     discount: number,
   ) {
-    // Sum all line totals
     const subtotal = items.reduce(
       (sum, item) => sum + item.quantity * item.unitPrice,
       0,
     );
-    // Apply invoice-level discount BEFORE tax calculation
     const afterDiscount = Math.max(0, subtotal - discount);
-
-    // GST split: CGST = half, SGST = half
     const totalTax = gstEnabled ? (afterDiscount * gstRate) / 100 : 0;
     const cgst = totalTax / 2;
     const sgst = totalTax / 2;
-
     const totalAmount = afterDiscount + totalTax;
 
     return {
@@ -49,8 +45,28 @@ export class CartService {
     };
   }
 
-  // HELPER: Get or Create Cart
+  // HELPER: Generate Payment Number
+  private async generatePaymentNumber(companyId: string): Promise<string> {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const prefix = `PAY-${dateStr}-`;
 
+    const last = await this.prisma.payment.findFirst({
+      where: { companyId, paymentNumber: { startsWith: prefix } },
+      orderBy: { paymentNumber: 'desc' },
+      select: { paymentNumber: true },
+    });
+
+    let nextSerial = 1;
+    if (last?.paymentNumber) {
+      const lastSerial = parseInt(last.paymentNumber.slice(prefix.length), 10);
+      if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
+    }
+
+    return prefix + String(nextSerial).padStart(3, '0');
+  }
+
+  // HELPER: Get or Create Cart
   private async getOrCreateCart(userId: string, companyId: string) {
     let cart = await this.prisma.cart.findUnique({
       where: { userId_companyId: { userId, companyId } },
@@ -81,7 +97,6 @@ export class CartService {
       },
     });
 
-    // If no cart exists, create a fresh empty one
     if (!cart) {
       cart = await this.prisma.cart.create({
         data: { userId, companyId },
@@ -98,25 +113,17 @@ export class CartService {
   // GET CART
   async getCart(userId: string, companyId: string) {
     const cart = await this.getOrCreateCart(userId, companyId);
-
-    // Calculate item count for the badge (Cart [5])
     const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-
-    return {
-      ...cart,
-      itemCount,
-    };
+    return { ...cart, itemCount };
   }
 
   // ADD ITEM TO CART
   async addItem(dto: AddToCartDto, userId: string, companyId: string) {
-    // Verify product exists and belongs to this company
     const product = await this.prisma.product.findFirst({
       where: { id: dto.productId, companyId, status: 'ACTIVE' },
     });
     if (!product) throw new NotFoundException('Product not found or inactive');
 
-    // Check stock availability
     if (product.stock < dto.quantity) {
       throw new BadRequestException(
         `Insufficient stock. Available: ${product.stock}`,
@@ -133,15 +140,12 @@ export class CartService {
         companyId,
       );
     }
-    // Check if product already exists in cart
+
     const existingItem = cart.items.find((i) => i.productId === dto.productId);
 
     await this.prisma.$transaction(async (tx) => {
       if (existingItem) {
-        // Product already in cart → increment quantity
         const newQty = existingItem.quantity + dto.quantity;
-
-        // Check total quantity doesn't exceed stock
         if (newQty > product.stock) {
           throw new BadRequestException(
             `Cannot add ${dto.quantity} more. Stock available: ${product.stock}, already in cart: ${existingItem.quantity}`,
@@ -149,13 +153,9 @@ export class CartService {
         }
         await tx.cartItem.update({
           where: { id: existingItem.id },
-          data: {
-            quantity: newQty,
-            lineTotal: newQty * effectivePrice,
-          },
+          data: { quantity: newQty, lineTotal: newQty * effectivePrice },
         });
       } else {
-        // New product → create cart item
         await tx.cartItem.create({
           data: {
             cartId: cart.id,
@@ -171,7 +171,6 @@ export class CartService {
         });
       }
 
-      // Refresh cart and recalculate totals
       await this.refreshCartTotals(
         tx,
         cart.id,
@@ -191,16 +190,9 @@ export class CartService {
     userId: string,
     companyId: string,
   ) {
-    // Find the cart item and make sure it belongs to this user's cart
     const cartItem = await this.prisma.cartItem.findFirst({
-      where: {
-        id: cartItemId,
-        cart: { userId, companyId },
-      },
-      include: {
-        cart: true,
-        product: { select: { stock: true } },
-      },
+      where: { id: cartItemId, cart: { userId, companyId } },
+      include: { cart: true, product: { select: { stock: true } } },
     });
 
     if (!cartItem) throw new NotFoundException('Cart item not found');
@@ -209,16 +201,13 @@ export class CartService {
 
     await this.prisma.$transaction(async (tx) => {
       if (dto.quantity === 0) {
-        // quantity = 0 means DELETE the item
         await tx.cartItem.delete({ where: { id: cartItemId } });
       } else {
-        // Check stock
         if (dto.quantity > cartItem.product.stock) {
           throw new BadRequestException(
             `Only ${cartItem.product.stock} units available in stock`,
           );
         }
-
         await tx.cartItem.update({
           where: { id: cartItemId },
           data: {
@@ -254,7 +243,6 @@ export class CartService {
   ) {
     const cart = await this.getOrCreateCart(userId, companyId);
 
-    // If customer changed → reprice all items with customer's custom pricing
     let repriceItems = false;
     if (dto.customerId && dto.customerId !== cart.customerId) {
       repriceItems = true;
@@ -265,7 +253,6 @@ export class CartService {
     const discount = dto.discount ?? cart.discount;
 
     await this.prisma.$transaction(async (tx) => {
-      // Reprice items if customer changed
       if (repriceItems && dto.customerId) {
         for (const item of cart.items) {
           const newPrice = await this.billingService.getCustomerPrice(
@@ -275,15 +262,11 @@ export class CartService {
           );
           await tx.cartItem.update({
             where: { id: item.id },
-            data: {
-              unitPrice: newPrice,
-              lineTotal: item.quantity * newPrice,
-            },
+            data: { unitPrice: newPrice, lineTotal: item.quantity * newPrice },
           });
         }
       }
 
-      // Update cart settings
       await tx.cart.update({
         where: { id: cart.id },
         data: {
@@ -298,7 +281,6 @@ export class CartService {
         },
       });
 
-      // Recalculate totals with fresh item data (prices may have changed)
       await this.refreshCartTotals(tx, cart.id, gstEnabled, gstRate, discount);
     });
 
@@ -309,7 +291,6 @@ export class CartService {
   async clearCart(userId: string, companyId: string) {
     const cart = await this.getOrCreateCart(userId, companyId);
 
-    // Delete all items + reset totals and customer
     await this.prisma.$transaction([
       this.prisma.cartItem.deleteMany({ where: { cartId: cart.id } }),
       this.prisma.cart.update({
@@ -356,7 +337,7 @@ export class CartService {
       throw new BadRequestException('Please enter walk-in customer name.');
     }
 
-    // Re-verify stock for all items (stock may have changed while cart was open)
+    // Re-verify stock
     for (const item of cart.items) {
       const product = await this.prisma.product.findUnique({
         where: { id: item.productId },
@@ -369,8 +350,7 @@ export class CartService {
       }
     }
 
-    // Build the CreateInvoiceDto from cart state and reuse existing createInvoice logic
-
+    // Build invoice DTO
     const createInvoiceDto = {
       invoiceType: cart.invoiceType,
       customerId: cart.customerId ?? undefined,
@@ -388,19 +368,18 @@ export class CartService {
       })),
     };
 
-    // Create the invoice (reuses all existing logic from BillingService)
+    // Create the invoice
     const invoice = await this.billingService.createInvoice(
       createInvoiceDto,
       companyId,
       userId,
     );
 
-    // If discount was applied at cart level, adjust the invoice
+    // Apply cart-level discount
     if (cart.discount > 0) {
       await this.prisma.invoice.update({
         where: { id: invoice.id },
         data: {
-          // Re-apply the discount to totalAmount and balanceDue
           totalAmount: { decrement: cart.discount },
           balanceDue: { decrement: cart.discount },
           subtotal: { decrement: cart.discount },
@@ -408,7 +387,6 @@ export class CartService {
         },
       });
 
-      // Also update customer outstanding
       if (cart.customerId) {
         await this.prisma.customer.update({
           where: { id: cart.customerId },
@@ -417,23 +395,124 @@ export class CartService {
       }
     }
 
-    // Clear the cart after successful checkout
+    // Final amount after discount
+    const finalAmount = parseFloat(
+      (invoice.totalAmount - (cart.discount || 0)).toFixed(2),
+    );
+
+    // Auto-record payment for non-credit sales (cash/UPI/bank/card)
+    const paymentModeStr = dto.paymentMode?.toUpperCase();
+    const isCreditSale = paymentModeStr === 'CREDIT' || !paymentModeStr;
+
+    // Determine actual amount paid right now
+    // - If amountPaid is sent and < finalAmount → partial payment
+    // - Otherwise → full payment
+    const requestedAmount = dto.amountPaid ?? finalAmount;
+    const actualPaidNow = Math.min(requestedAmount, finalAmount);
+    const isPartialPayment = actualPaidNow > 0 && actualPaidNow < finalAmount;
+    const newBalance = parseFloat((finalAmount - actualPaidNow).toFixed(2));
+
+    let finalStatus: InvoiceStatus = invoice.status;
+    let finalPaidAmount = 0;
+    let finalBalanceDue = finalAmount;
+
+    if (!isCreditSale && actualPaidNow > 0) {
+      // Map "CARD" → "CASH" since DB enum doesn't have CARD
+      const dbPaymentMode: PaymentMode =
+        paymentModeStr === 'CARD'
+          ? PaymentMode.CASH
+          : (paymentModeStr as PaymentMode);
+
+      const paymentNumber = await this.generatePaymentNumber(companyId);
+
+      await this.prisma.$transaction(async (tx) => {
+        // Create payment record for the ACTUAL amount paid (not full invoice)
+        await tx.payment.create({
+          data: {
+            paymentNumber,
+            customerId: cart.customerId ?? null,
+            walkInName: cart.walkInName ?? null,
+            walkInPhone: cart.walkInPhone ?? null,
+            invoiceId: invoice.id,
+            companyId,
+            createdById: userId,
+            amount: actualPaidNow,
+            paymentMode: dbPaymentMode,
+            referenceId: dto.referenceId,
+            paymentDate: new Date(),
+          },
+        });
+
+        // Update invoice with correct paid/balance/status
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            paidAmount: actualPaidNow,
+            balanceDue: newBalance,
+            status: isPartialPayment
+              ? InvoiceStatus.PARTIAL
+              : InvoiceStatus.PAID,
+          },
+        });
+
+        // createInvoice already incremented customer outstanding by full totalAmount.
+        // Now decrement by what was actually paid — the unpaid remainder stays
+        // in outstanding, which is correct for partial payments.
+        if (cart.customerId) {
+          await tx.customer.update({
+            where: { id: cart.customerId },
+            data: { outstandingBalance: { decrement: actualPaidNow } },
+          });
+
+          const updatedCustomer = await tx.customer.findUnique({
+            where: { id: cart.customerId },
+            select: { outstandingBalance: true },
+          });
+
+          await tx.customerLedger.create({
+            data: {
+              customerId: cart.customerId,
+              companyId,
+              entryType: 'PAYMENT',
+              paymentMode: dbPaymentMode,
+              referenceNo: paymentNumber,
+              description: isPartialPayment
+                ? `Partial payment against ${invoice.invoiceNumber}`
+                : `Payment against ${invoice.invoiceNumber}`,
+              debitAmount: 0,
+              creditAmount: actualPaidNow,
+              balance: updatedCustomer!.outstandingBalance,
+              entryDate: new Date(),
+            },
+          });
+        }
+      });
+
+      finalStatus = isPartialPayment
+        ? InvoiceStatus.PARTIAL
+        : InvoiceStatus.PAID;
+      finalPaidAmount = actualPaidNow;
+      finalBalanceDue = newBalance;
+    }
+
+    // Clear the cart
     await this.clearCart(userId, companyId);
 
     return {
-      message: 'Checkout successful',
+      message: isPartialPayment
+        ? 'Checkout successful (partial payment recorded)'
+        : 'Checkout successful',
       invoice: {
         id: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
-        totalAmount: invoice.totalAmount - (cart.discount || 0),
-        status: invoice.status,
+        totalAmount: finalAmount,
+        paidAmount: finalPaidAmount,
+        balanceDue: finalBalanceDue,
+        status: finalStatus,
       },
     };
   }
-
   // PRIVATE HELPER: Refresh Cart Totals
-  // Called after every cart change to keep subtotal/gst/total accurate
-
   private async refreshCartTotals(
     tx: any,
     cartId: string,
@@ -441,7 +520,6 @@ export class CartService {
     gstRate: number,
     discount: number,
   ) {
-    // Fetch fresh items from DB (within the transaction, so we see new values)
     const freshItems = await tx.cartItem.findMany({ where: { cartId } });
     const totals = this.calculateCartTotals(
       freshItems,
@@ -449,10 +527,6 @@ export class CartService {
       gstRate,
       discount,
     );
-
-    await tx.cart.update({
-      where: { id: cartId },
-      data: totals,
-    });
+    await tx.cart.update({ where: { id: cartId }, data: totals });
   }
 }

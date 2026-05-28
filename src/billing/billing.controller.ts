@@ -26,6 +26,7 @@ import {
   PaymentFilterDto,
   OutstandingFilterDto,
   UpdateInvoiceDto,
+  DailySummaryFilterDto,
 } from './dto/billing.dto';
 
 import { Role } from '@prisma/client';
@@ -36,8 +37,6 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CompanyScopeGuard } from 'src/common/guards/company-scope.guard';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
 
-// Matches the shape used in CartController — JWT validate() returns { sub, role }.
-// companyId comes from @CurrentCompany() (the X-Company-Id header read by CompanyScopeGuard).
 interface JwtUser {
   sub: string;
   role: Role;
@@ -151,8 +150,6 @@ export class BillingController {
     @CurrentCompany() companyId: string,
   ) {
     // TODO: implement actual update in BillingService.updateInvoice(id, dto, companyId)
-    // For now this is a stub that returns the unchanged invoice — frontend
-    // will appear to "save" without persisting changes.
     const invoice = await this.billingService.findInvoiceById(id, companyId);
     return invoice;
   }
@@ -201,7 +198,7 @@ export class BillingController {
   @ApiOperation({
     summary: "List payments with today's summary",
     description:
-      "Returns paginated payments list + today's Cash/UPI/Bank breakdown (for dashboard cards).",
+      "Returns paginated payments list + today's Cash/UPI/Bank breakdown (for dashboard cards). Supports paymentMode, customerId, dateFrom and dateTo filters.",
   })
   async findAllPayments(
     @Query() filters: PaymentFilterDto,
@@ -219,13 +216,24 @@ export class BillingController {
   @ApiOperation({
     summary: 'Get outstanding dues',
     description:
-      'Returns customers with pending payments. Includes risk classification (HIGH >15d, MEDIUM 7-15d, RECENT <7d). Includes summary stats for dashboard cards.',
+      'Returns customers with pending payments. Includes risk classification (HIGH >15d, MEDIUM 7-15d, RECENT <7d). Supports search (name/code/phone) and sortBy (risk/amount/days/lastPaid).',
   })
   @ApiQuery({
     name: 'risk',
     required: false,
     enum: ['HIGH', 'MEDIUM', 'RECENT'],
     description: 'Filter by risk level',
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description: 'Search by name, customerCode, or phone',
+  })
+  @ApiQuery({
+    name: 'sortBy',
+    required: false,
+    enum: ['risk', 'amount', 'days', 'lastPaid'],
+    description: 'Sort order (default: risk)',
   })
   async getOutstanding(
     @Query() filters: OutstandingFilterDto,
@@ -237,19 +245,30 @@ export class BillingController {
   @Get('daily-summary')
   @Roles(Role.ADMIN, Role.STAFF)
   @ApiOperation({
-    summary: 'Get daily billing summary',
+    summary: 'Get daily / range billing summary',
     description:
-      'Returns daily totals: invoices count, total billed, payments by mode, new customers, top products.',
+      'Returns aggregated stats for a single day (via `date`) or a date range (via `dateFrom` + `dateTo`). Defaults to today if nothing is provided.',
   })
   @ApiQuery({
     name: 'date',
     required: false,
-    description: 'Date (YYYY-MM-DD). Defaults to today.',
+    description:
+      'Single date (YYYY-MM-DD). Ignored if dateFrom/dateTo are provided.',
+  })
+  @ApiQuery({
+    name: 'dateFrom',
+    required: false,
+    description: 'Range start (YYYY-MM-DD). Use with dateTo.',
+  })
+  @ApiQuery({
+    name: 'dateTo',
+    required: false,
+    description: 'Range end (YYYY-MM-DD). Use with dateFrom.',
   })
   async getDailySummary(
+    @Query() filters: DailySummaryFilterDto,
     @CurrentCompany() companyId: string,
-    @Query('date') date?: string,
   ) {
-    return this.billingService.getDailySummary(companyId, date);
+    return this.billingService.getDailySummary(companyId, filters);
   }
 }

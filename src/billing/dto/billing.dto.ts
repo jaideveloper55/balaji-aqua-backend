@@ -10,12 +10,14 @@ import {
   IsInt,
   Min,
   ArrayMinSize,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { InvoiceType, PaymentMode } from '@prisma/client';
 
-// Each line item in the invoice
+// Invoice items
+
 export class CreateInvoiceItemDto {
   @ApiProperty({ description: 'Product ID', example: 'clx123abc' })
   @IsString()
@@ -42,13 +44,11 @@ export class CreateInvoiceItemDto {
 }
 
 export class CreateInvoiceDto {
-  // For existing customer sales
   @ApiPropertyOptional({ description: 'Customer ID (for existing customers)' })
   @IsOptional()
   @IsString()
   customerId?: string;
 
-  // For walk-in sales
   @ApiPropertyOptional({
     description: 'Walk-in customer name (for WALK_IN type)',
   })
@@ -94,12 +94,12 @@ export class CreateInvoiceDto {
   })
   @IsArray()
   @ArrayMinSize(1)
-  @ValidateNested({ each: true }) // validate each item in the array
+  @ValidateNested({ each: true })
   @Type(() => CreateInvoiceItemDto)
   items: CreateInvoiceItemDto[];
 }
 
-//  UPDATE INVOICE
+// Update invoice
 
 export class UpdateInvoiceDto {
   @ApiPropertyOptional()
@@ -113,7 +113,7 @@ export class UpdateInvoiceDto {
   dueDate?: string;
 }
 
-//  RECORD PAYMENT
+// Record payment
 
 export class CreatePaymentDto {
   @ApiProperty({ description: 'Customer ID who is paying' })
@@ -156,7 +156,7 @@ export class CreatePaymentDto {
   paymentDate?: string;
 }
 
-// QUERY / FILTER DTOs
+// Filters
 
 export class InvoiceFilterDto {
   @ApiPropertyOptional({ description: 'Page number', example: 1 })
@@ -174,8 +174,9 @@ export class InvoiceFilterDto {
   limit?: number = 20;
 
   @ApiPropertyOptional({
-    description: 'Filter by status',
-    enum: ['DRAFT', 'CONFIRMED', 'PAID', 'PARTIAL', 'CANCELLED'],
+    description:
+      'Filter by status. OVERDUE is derived (balance > 0 + dueDate passed), not a stored value.',
+    enum: ['DRAFT', 'CONFIRMED', 'PAID', 'PARTIAL', 'CANCELLED', 'OVERDUE'],
   })
   @IsOptional()
   @IsString()
@@ -254,6 +255,23 @@ export class OutstandingFilterDto {
   @IsString()
   risk?: 'HIGH' | 'MEDIUM' | 'RECENT';
 
+  @ApiPropertyOptional({
+    description: 'Search by customer name, customerCode, or phone',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Sort field. risk = days overdue × balance (default), amount = outstanding desc, days = overdue days desc, lastPaid = oldest payment first.',
+    enum: ['risk', 'amount', 'days', 'lastPaid'],
+    default: 'risk',
+  })
+  @IsOptional()
+  @IsIn(['risk', 'amount', 'days', 'lastPaid'])
+  sortBy?: 'risk' | 'amount' | 'days' | 'lastPaid' = 'risk';
+
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
@@ -267,4 +285,31 @@ export class OutstandingFilterDto {
   @IsInt()
   @Min(1)
   limit?: number = 20;
+}
+
+export class DailySummaryFilterDto {
+  @ApiPropertyOptional({
+    description:
+      'Single date (YYYY-MM-DD). Used when dateFrom/dateTo are not provided. Defaults to today.',
+    example: '2026-05-27',
+  })
+  @IsOptional()
+  @IsString()
+  date?: string;
+
+  @ApiPropertyOptional({
+    description: 'From date (YYYY-MM-DD). Use with dateTo for a range summary.',
+    example: '2026-05-01',
+  })
+  @IsOptional()
+  @IsString()
+  dateFrom?: string;
+
+  @ApiPropertyOptional({
+    description: 'To date (YYYY-MM-DD). Use with dateFrom for a range summary.',
+    example: '2026-05-31',
+  })
+  @IsOptional()
+  @IsString()
+  dateTo?: string;
 }

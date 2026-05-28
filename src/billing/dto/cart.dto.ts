@@ -6,14 +6,10 @@ import {
   IsEnum,
   IsInt,
   Min,
-  IsArray,
-  ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { InvoiceType } from '@prisma/client';
 
-// ADD / UPDATE ITEM IN CART
 export class AddToCartDto {
   @ApiProperty({ description: 'Product ID to add', example: 'clx_product_id' })
   @IsString()
@@ -39,7 +35,7 @@ export class AddToCartDto {
 export class UpdateCartItemDto {
   @ApiProperty({ description: 'New quantity (set to 0 to remove)', example: 2 })
   @IsInt()
-  @Min(0) // 0 = remove the item
+  @Min(0)
   quantity: number;
 
   @ApiPropertyOptional({ description: 'Updated unit price' })
@@ -103,6 +99,7 @@ export class UpdateCartSettingsDto {
 }
 
 //  CHECKOUT (Convert cart → invoice)
+
 export class CheckoutCartDto {
   @ApiPropertyOptional({
     description: 'Payment mode if paying immediately',
@@ -121,4 +118,14 @@ export class CheckoutCartDto {
   @IsOptional()
   @IsString()
   dueDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Partial payment amount. If less than total, invoice becomes PARTIAL',
+    example: 50,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  amountPaid?: number;
 }

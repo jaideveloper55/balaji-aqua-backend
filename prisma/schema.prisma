@@ -49,6 +49,7 @@ enum PaymentMode {
   UPI
   BANK_TRANSFER
   CREDIT
+  CARD
 }
 
 enum LedgerEntryType {
@@ -412,18 +413,24 @@ model InvoiceItem {
 }
 
 // ─── PAYMENT ────────────────────────────────────────────────────────────────
+
 model Payment {
   id            String @id @default(cuid())
   paymentNumber String
 
-  customerId String
-  customer   Customer @relation(fields: [customerId], references: [id])
+  // Customer can be null for walk-in payments
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  // Walk-in payer info (used when customerId is null)
+  walkInName  String?
+  walkInPhone String?
 
   invoiceId String?
   invoice   Invoice? @relation(fields: [invoiceId], references: [id])
 
   amount      Float
-  paymentMode PaymentMode // CASH, UPI, BANK_TRANSFER, CREDIT (reusing existing enum)
+  paymentMode PaymentMode
   referenceId String?
   notes       String?
 

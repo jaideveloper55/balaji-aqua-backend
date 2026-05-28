@@ -10,6 +10,7 @@ import {
   InvoiceFilterDto,
   PaymentFilterDto,
   OutstandingFilterDto,
+  DailySummaryFilterDto,
 } from './dto/billing.dto';
 import { Invoice, InvoiceStatus, InvoiceType, Prisma } from '@prisma/client';
 
@@ -31,7 +32,6 @@ interface TotalsResult {
   totalAmount: number;
 }
 
-// Input type for calculateTotals()
 interface LineItemInput {
   productId: string;
   quantity: number;
@@ -86,9 +86,6 @@ export class BillingService {
   }
 
   // ─── HELPER: Calculate Totals ─────────────────────────────────────────────
-  // FIX #1: Input type is LineItemInput[] (has productId), return type is TotalsResult
-  // Previously: items typed as { quantity, unitPrice, discount? } — no productId
-  // That caused: "Property 'productId' does not exist on type..."
   private calculateTotals(
     items: LineItemInput[],
     gstEnabled: boolean,
@@ -130,6 +127,44 @@ export class BillingService {
     };
   }
 
+  // ─── HELPER: Resolve date range from filter ──────────────────────────────
+  // Returns [start-of-day, end-of-day] for either a single date or a range.
+  // If neither is provided, defaults to today.
+  private resolveDateRange(input: {
+    date?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }): { start: Date; end: Date; isRange: boolean } {
+    // Range takes precedence
+    if (input.dateFrom && input.dateTo) {
+      const start = new Date(input.dateFrom);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(input.dateTo);
+      end.setHours(23, 59, 59, 999);
+      return {
+        start,
+        end,
+        isRange: !this.isSameDay(start, end),
+      };
+    }
+
+    // Single date (legacy / default)
+    const base = input.date ? new Date(input.date) : new Date();
+    const start = new Date(base);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(base);
+    end.setHours(23, 59, 59, 999);
+    return { start, end, isRange: false };
+  }
+
+  private isSameDay(a: Date, b: Date): boolean {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    );
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // 1. CREATE INVOICE
   // ─────────────────────────────────────────────────────────────────────────
@@ -168,7 +203,6 @@ export class BillingService {
 
     const gstRate = dto.gstEnabled ? (dto.gstRate ?? 18) : 0;
 
-    // FIX #1: Pass dto.items directly — they already have productId
     const { processedItems, subtotal, cgst, sgst, igst, totalAmount } =
       this.calculateTotals(dto.items, dto.gstEnabled ?? false, gstRate);
 
@@ -195,11 +229,10 @@ export class BillingService {
           totalAmount,
           balanceDue: totalAmount,
           paidAmount: 0,
-          status: InvoiceStatus.CONFIRMED, // FIX: use enum instead of string literal
+          status: InvoiceStatus.CONFIRMED,
 
           items: {
             create: processedItems.map((item) => {
-              // FIX #1: processedItems now has productId, so no need for idx trick
               const product = productMap.get(item.productId)!;
               return {
                 productId: item.productId,
@@ -235,7 +268,6 @@ export class BillingService {
           data: { outstandingBalance: { increment: totalAmount } },
         });
 
-        // Re-fetch balance AFTER the increment above
         const updatedForLedger = await tx.customer.findUnique({
           where: { id: dto.customerId },
           select: { outstandingBalance: true },
@@ -250,18 +282,15 @@ export class BillingService {
             description: `Invoice ${invoiceNumber}`,
             debitAmount: totalAmount,
             creditAmount: 0,
-
             cgst,
             sgst,
             igst,
-            // FIX: use updatedForLedger (non-null assert after findUnique)
             balance: updatedForLedger!.outstandingBalance,
             entryDate: new Date(),
           },
         });
       }
 
-      // Stock reduction — sequential is fine inside a transaction
       for (const item of processedItems) {
         await tx.product.update({
           where: { id: item.productId },
@@ -282,12 +311,17 @@ export class BillingService {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
     const skip = (page - 1) * limit;
+    const now = new Date();
 
-    // FIX: Use Prisma.InvoiceWhereInput instead of `any`
-    // This gives full TypeScript autocomplete and type safety on where clauses
     const where: Prisma.InvoiceWhereInput = { companyId };
 
-    if (filters.status) {
+    if (filters.status === 'OVERDUE') {
+      where.AND = [
+        { balanceDue: { gt: 0 } },
+        { dueDate: { lt: now } },
+        { status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] } },
+      ];
+    } else if (filters.status) {
       where.status = filters.status as InvoiceStatus;
     }
 
@@ -323,7 +357,16 @@ export class BillingService {
       ];
     }
 
-    const [total, invoices] = await Promise.all([
+    const [
+      total,
+      invoices,
+      paidCount,
+      pendingCount,
+      partialCount,
+      overdueCount,
+      totalsSum,
+      totalAllCount,
+    ] = await Promise.all([
       this.prisma.invoice.count({ where }),
       this.prisma.invoice.findMany({
         where,
@@ -343,14 +386,53 @@ export class BillingService {
           items: {
             include: { product: { select: { name: true, sku: true } } },
           },
+          payments: {
+            orderBy: { paymentDate: 'desc' },
+            take: 1,
+            select: { paymentMode: true },
+          },
           _count: { select: { payments: true } },
         },
+      }),
+      this.prisma.invoice.count({
+        where: { companyId, status: InvoiceStatus.PAID },
+      }),
+      this.prisma.invoice.count({
+        where: { companyId, status: InvoiceStatus.CONFIRMED },
+      }),
+      this.prisma.invoice.count({
+        where: { companyId, status: InvoiceStatus.PARTIAL },
+      }),
+      this.prisma.invoice.count({
+        where: {
+          companyId,
+          balanceDue: { gt: 0 },
+          dueDate: { lt: now },
+          status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+        },
+      }),
+      this.prisma.invoice.aggregate({
+        where: { companyId, status: { not: InvoiceStatus.CANCELLED } },
+        _sum: { totalAmount: true, balanceDue: true, paidAmount: true },
+      }),
+      this.prisma.invoice.count({
+        where: { companyId, status: { not: InvoiceStatus.CANCELLED } },
       }),
     ]);
 
     return {
       data: invoices,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+      stats: {
+        paid: paidCount,
+        pending: pendingCount,
+        partial: partialCount,
+        overdue: overdueCount,
+        totalAll: totalAllCount,
+        totalBilled: totalsSum._sum.totalAmount ?? 0,
+        totalCollected: totalsSum._sum.paidAmount ?? 0,
+        totalPending: totalsSum._sum.balanceDue ?? 0,
+      },
     };
   }
 
@@ -383,17 +465,12 @@ export class BillingService {
   // 4. CANCEL INVOICE
   // ─────────────────────────────────────────────────────────────────────────
   async cancelInvoice(id: string, companyId: string) {
-    // FIX #2: Typed explicitly so TS knows it's Invoice | null, not `null`
-    // Previously: `let invoice = null` → TS inferred type `null` forever
-    // Then when we assigned from findFirst(), it conflicted → "not assignable to null"
     const invoice: Invoice | null = await this.prisma.invoice.findFirst({
       where: { id, companyId },
     });
 
     if (!invoice) throw new NotFoundException('Invoice not found');
 
-    // After the null check above, TS now knows invoice is Invoice (not null)
-    // So invoice.status, invoice.balanceDue etc. all work ✓
     if (invoice.status === InvoiceStatus.CANCELLED) {
       throw new BadRequestException('Invoice already cancelled');
     }
@@ -455,9 +532,6 @@ export class BillingService {
     });
     if (!customer) throw new NotFoundException('Customer not found');
 
-    // FIX #2: Type as Invoice | null explicitly
-    // Previously: `let invoice = null` → TS never updated the type when assigned below
-    // Result: invoice.status etc. gave "Property does not exist on type 'never'"
     let invoice: Invoice | null = null;
 
     if (dto.invoiceId) {
@@ -465,11 +539,8 @@ export class BillingService {
         where: { id: dto.invoiceId, companyId, customerId: dto.customerId },
       });
 
-      // After assignment, TS knows invoice is Invoice | null
-      // The null check below narrows it to Invoice
       if (!invoice) throw new NotFoundException('Invoice not found');
 
-      // Now invoice is Invoice — all properties accessible ✓
       if (invoice.status === InvoiceStatus.PAID) {
         throw new BadRequestException('Invoice is already fully paid');
       }
@@ -501,8 +572,6 @@ export class BillingService {
         },
       });
 
-      // FIX #3: invoice might be null here if no invoiceId was provided
-      // Use `invoice !== null` check (not just `if (invoice)`) for clarity
       if (invoice !== null) {
         const newPaid = invoice.paidAmount + dto.amount;
         const newBalance = invoice.totalAmount - newPaid;
@@ -524,7 +593,6 @@ export class BillingService {
         data: { outstandingBalance: { decrement: dto.amount } },
       });
 
-      // Re-fetch after decrement to get accurate balance for ledger
       const updatedCustomer = await tx.customer.findUnique({
         where: { id: dto.customerId },
         select: { outstandingBalance: true },
@@ -559,7 +627,6 @@ export class BillingService {
     const limit = filters.limit ?? 20;
     const skip = (page - 1) * limit;
 
-    // FIX: Use Prisma.PaymentWhereInput instead of `any`
     const where: Prisma.PaymentWhereInput = { companyId };
 
     if (filters.paymentMode) where.paymentMode = filters.paymentMode as any;
@@ -628,58 +695,83 @@ export class BillingService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
   // 7. OUTSTANDING DUES
-  // ─────────────────────────────────────────────────────────────────────────
+
   async getOutstanding(filters: OutstandingFilterDto, companyId: string) {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
     const skip = (page - 1) * limit;
+    const sortBy = filters.sortBy ?? 'risk';
     const now = new Date();
 
-    // FIX: Use Prisma.CustomerWhereInput instead of `any`
     const where: Prisma.CustomerWhereInput = {
       companyId,
       outstandingBalance: { gt: 0 },
       status: 'ACTIVE',
     };
 
+    if (filters.search?.trim()) {
+      const q = filters.search.trim();
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { customerCode: { contains: q, mode: 'insensitive' } },
+        { phone: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    const isInMemorySort =
+      sortBy === 'risk' || sortBy === 'days' || sortBy === 'lastPaid';
+
+    const dbOrderBy: Prisma.CustomerOrderByWithRelationInput =
+      sortBy === 'amount'
+        ? { outstandingBalance: 'desc' }
+        : { outstandingBalance: 'desc' };
+
+    const selectShape = {
+      id: true,
+      name: true,
+      customerCode: true,
+      phone: true,
+      type: true,
+      outstandingBalance: true,
+      ledger: {
+        where: { entryType: 'PAYMENT' as const },
+        orderBy: { entryDate: 'desc' as const },
+        take: 1,
+        select: { entryDate: true },
+      },
+      invoices: {
+        where: {
+          status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+        },
+        orderBy: { invoiceDate: 'asc' as const },
+        take: 1,
+        select: {
+          invoiceDate: true,
+          invoiceNumber: true,
+          balanceDue: true,
+        },
+      },
+    } satisfies Prisma.CustomerSelect;
+
     const [total, customers] = await Promise.all([
       this.prisma.customer.count({ where }),
-      this.prisma.customer.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { outstandingBalance: 'desc' },
-        select: {
-          id: true,
-          name: true,
-          customerCode: true,
-          phone: true,
-          type: true,
-          outstandingBalance: true,
-          ledger: {
-            where: { entryType: 'PAYMENT' },
-            orderBy: { entryDate: 'desc' },
-            take: 1,
-            select: { entryDate: true },
-          },
-          invoices: {
-            where: {
-              status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
-            },
-            orderBy: { invoiceDate: 'asc' },
-            take: 1,
-            select: {
-              invoiceDate: true,
-              invoiceNumber: true,
-              balanceDue: true,
-            },
-          },
-        },
-      }),
+      isInMemorySort
+        ? this.prisma.customer.findMany({
+            where,
+            orderBy: dbOrderBy,
+            select: selectShape,
+          })
+        : this.prisma.customer.findMany({
+            where,
+            orderBy: dbOrderBy,
+            skip,
+            take: limit,
+            select: selectShape,
+          }),
     ]);
 
+    // ── Enrich with derived fields ─────────────────────────────────────
     const enriched = customers.map((c) => {
       const oldestInvoice = c.invoices[0];
       const lastPayment = c.ledger[0];
@@ -713,10 +805,35 @@ export class BillingService {
       };
     });
 
-    const filtered = filters.risk
+    let filtered = filters.risk
       ? enriched.filter((c) => c.risk === filters.risk)
       : enriched;
 
+    if (sortBy === 'risk') {
+      filtered = filtered.sort(
+        (a, b) =>
+          b.overdueDays * b.outstandingBalance -
+          a.overdueDays * a.outstandingBalance,
+      );
+    } else if (sortBy === 'days') {
+      filtered = filtered.sort((a, b) => b.overdueDays - a.overdueDays);
+    } else if (sortBy === 'lastPaid') {
+      // No-payment customers first (riskiest), then oldest payment date first
+      filtered = filtered.sort((a, b) => {
+        if (!a.lastPaid && !b.lastPaid) return 0;
+        if (!a.lastPaid) return -1;
+        if (!b.lastPaid) return 1;
+        return a.lastPaid.getTime() - b.lastPaid.getTime();
+      });
+    }
+    // sortBy === 'amount' is already correctly ordered from DB
+
+    // ── Paginate after in-memory sort ──────────────────────────────────
+    const paginated = isInMemorySort
+      ? filtered.slice(skip, skip + limit)
+      : filtered;
+
+    // ── Summary stats ──────────────────────────────────────────────────
     const summary = await this.prisma.customer.aggregate({
       where: { companyId, outstandingBalance: { gt: 0 }, status: 'ACTIVE' },
       _sum: { outstandingBalance: true },
@@ -733,35 +850,40 @@ export class BillingService {
         : 0;
 
     return {
-      data: filtered,
+      data: paginated,
       summary: {
         totalOutstanding: summary._sum.outstandingBalance ?? 0,
         customersWithDues: summary._count,
         highRiskCount,
         avgOverdueDays: avgOverdue,
       },
-      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+      meta: {
+        total: filters.risk ? filtered.length : total,
+        page,
+        limit,
+        totalPages: Math.ceil((filters.risk ? filtered.length : total) / limit),
+      },
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 8. DAILY SUMMARY
-  // ─────────────────────────────────────────────────────────────────────────
-  async getDailySummary(companyId: string, date?: string) {
-    const targetDate = date ? new Date(date) : new Date();
-    const start = new Date(targetDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(targetDate);
-    end.setHours(23, 59, 59, 999);
+  // 8. DAILY SUMMARY  (now accepts dateFrom/dateTo range)
 
-    const dateWhere = { gte: start, lte: end };
+  async getDailySummary(companyId: string, filters: DailySummaryFilterDto) {
+    const hasDates = !!(filters.date || filters.dateFrom || filters.dateTo);
+    const { start, end, isRange } = this.resolveDateRange(filters);
+    const dateWhere = hasDates ? { gte: start, lte: end } : undefined;
 
-    const [invoiceStats, paymentStats, newCustomers, topProducts] =
+    // Spread helpers so we apply the date filter only when we have one.
+    const invoiceDateFilter = dateWhere ? { invoiceDate: dateWhere } : {};
+    const paymentDateFilter = dateWhere ? { paymentDate: dateWhere } : {};
+    const customerDateFilter = dateWhere ? { createdAt: dateWhere } : {};
+
+    const [invoiceStats, paymentStats, newCustomers, topProducts, creditStats] =
       await Promise.all([
         this.prisma.invoice.aggregate({
           where: {
             companyId,
-            invoiceDate: dateWhere,
+            ...invoiceDateFilter,
             status: { not: InvoiceStatus.CANCELLED },
           },
           _sum: { totalAmount: true, balanceDue: true },
@@ -769,25 +891,36 @@ export class BillingService {
         }),
         this.prisma.payment.groupBy({
           by: ['paymentMode'],
-          where: { companyId, paymentDate: dateWhere },
+          where: { companyId, ...paymentDateFilter },
           _sum: { amount: true },
           _count: true,
         }),
         this.prisma.customer.count({
-          where: { companyId, createdAt: dateWhere },
+          where: { companyId, ...customerDateFilter },
         }),
         this.prisma.invoiceItem.groupBy({
           by: ['productId', 'productName'],
           where: {
             companyId,
             invoice: {
-              invoiceDate: dateWhere,
+              ...invoiceDateFilter,
               status: { not: InvoiceStatus.CANCELLED },
             },
           },
           _sum: { quantity: true, lineTotal: true },
           orderBy: { _sum: { lineTotal: 'desc' } },
           take: 5,
+        }),
+
+        this.prisma.invoice.aggregate({
+          where: {
+            companyId,
+            ...invoiceDateFilter,
+            status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+            balanceDue: { gt: 0 },
+          },
+          _sum: { balanceDue: true, totalAmount: true },
+          _count: true,
         }),
       ]);
 
@@ -804,13 +937,23 @@ export class BillingService {
     });
 
     return {
-      date: targetDate.toISOString().slice(0, 10),
+      period: {
+        from: hasDates ? start.toISOString().slice(0, 10) : null,
+        to: hasDates ? end.toISOString().slice(0, 10) : null,
+        isRange,
+        allTime: !hasDates,
+      },
+
+      date: hasDates ? start.toISOString().slice(0, 10) : null,
       invoices: {
         count: invoiceStats._count,
         totalBilled: invoiceStats._sum.totalAmount ?? 0,
         totalPending: invoiceStats._sum.balanceDue ?? 0,
       },
       payments: { ...payments, total: totalPaymentsReceived },
+
+      creditSales: creditStats._sum.balanceDue ?? 0,
+      creditSalesCount: creditStats._count,
       newCustomers,
       topProducts: topProducts.map((p) => ({
         productId: p.productId,
