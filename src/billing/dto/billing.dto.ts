@@ -245,6 +245,13 @@ export class PaymentFilterDto {
   @IsOptional()
   @IsString()
   dateTo?: string;
+
+  @ApiPropertyOptional({
+    description: 'Search by payment number, invoice number, or customer name',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
 
 export class OutstandingFilterDto {
@@ -264,13 +271,13 @@ export class OutstandingFilterDto {
 
   @ApiPropertyOptional({
     description:
-      'Sort field. risk = days overdue × balance (default), amount = outstanding desc, days = overdue days desc, lastPaid = oldest payment first.',
-    enum: ['risk', 'amount', 'days', 'lastPaid'],
+      'Sort field. risk = days overdue × balance (default), amount = outstanding desc, days = overdue days desc, lastPaid = oldest payment first, newest = most recent invoice first.',
+    enum: ['risk', 'amount', 'days', 'lastPaid', 'newest'],
     default: 'risk',
   })
   @IsOptional()
-  @IsIn(['risk', 'amount', 'days', 'lastPaid'])
-  sortBy?: 'risk' | 'amount' | 'days' | 'lastPaid' = 'risk';
+  @IsIn(['risk', 'amount', 'days', 'lastPaid', 'newest'])
+  sortBy?: 'risk' | 'amount' | 'days' | 'lastPaid' | 'newest' = 'risk';
 
   @ApiPropertyOptional()
   @IsOptional()

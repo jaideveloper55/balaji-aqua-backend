@@ -5,10 +5,13 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsArray,
+  ValidateNested,
   Min,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { InvoiceType } from '@prisma/client';
+import { InvoiceType, PaymentMode } from '@prisma/client';
 
 export class AddToCartDto {
   @ApiProperty({ description: 'Product ID to add', example: 'clx_product_id' })
@@ -98,11 +101,28 @@ export class UpdateCartSettingsDto {
   notes?: string;
 }
 
-//  CHECKOUT (Convert cart → invoice)
+//  SPLIT PAYMENT ENTRY (one real-money mode + amount)
+export class PaymentSplitDto {
+  @ApiProperty({ enum: PaymentMode, example: 'CASH' })
+  @IsEnum(PaymentMode)
+  mode: PaymentMode;
 
+  @ApiProperty({ description: 'Amount paid in this mode', example: 10 })
+  @IsNumber()
+  @Min(0.01)
+  amount: number;
+
+  @ApiPropertyOptional({ description: 'UPI/bank reference for this split' })
+  @IsOptional()
+  @IsString()
+  referenceId?: string;
+}
+
+//  CHECKOUT (Convert cart → invoice)
 export class CheckoutCartDto {
   @ApiPropertyOptional({
-    description: 'Payment mode if paying immediately',
+    description:
+      'Payment mode if paying immediately (single-payment fast path)',
     example: 'CASH',
   })
   @IsOptional()
@@ -114,18 +134,33 @@ export class CheckoutCartDto {
   @IsString()
   referenceId?: string;
 
-  @ApiPropertyOptional({ description: 'Due date for credit sales' })
+  @ApiPropertyOptional({
+    description: 'Due date for credit / remaining balance',
+  })
   @IsOptional()
   @IsString()
   dueDate?: string;
 
   @ApiPropertyOptional({
     description:
-      'Partial payment amount. If less than total, invoice becomes PARTIAL',
+      'Partial payment amount (single-payment path). If less than total, invoice becomes PARTIAL',
     example: 50,
   })
   @IsOptional()
   @IsNumber()
   @Min(0)
   amountPaid?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Split payments. When provided, each entry is recorded as a separate payment in one transaction. ' +
+      'The remainder (invoice total − sum of splits) stays as balance due / credit. ' +
+      'Takes precedence over paymentMode/amountPaid when present.',
+    type: [PaymentSplitDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PaymentSplitDto)
+  payments?: PaymentSplitDto[];
 }

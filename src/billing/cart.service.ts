@@ -319,14 +319,12 @@ export class CartService {
   async checkout(dto: CheckoutCartDto, userId: string, companyId: string) {
     const cart = await this.getOrCreateCart(userId, companyId);
 
-    // Validation: cart must have items
     if (cart.items.length === 0) {
       throw new BadRequestException(
         'Cart is empty. Add products before checkout.',
       );
     }
 
-    // Validation: must have a customer (existing or walk-in)
     const isWalkIn = cart.invoiceType === InvoiceType.WALK_IN;
     if (!isWalkIn && !cart.customerId) {
       throw new BadRequestException(
@@ -400,98 +398,144 @@ export class CartService {
       (invoice.totalAmount - (cart.discount || 0)).toFixed(2),
     );
 
-    // Auto-record payment for non-credit sales (cash/UPI/bank/card)
-    const paymentModeStr = dto.paymentMode?.toUpperCase();
-    const isCreditSale = paymentModeStr === 'CREDIT' || !paymentModeStr;
+    // Build the list of real-money splits to record
 
-    // Determine actual amount paid right now
-    // - If amountPaid is sent and < finalAmount → partial payment
-    // - Otherwise → full payment
-    const requestedAmount = dto.amountPaid ?? finalAmount;
-    const actualPaidNow = Math.min(requestedAmount, finalAmount);
-    const isPartialPayment = actualPaidNow > 0 && actualPaidNow < finalAmount;
-    const newBalance = parseFloat((finalAmount - actualPaidNow).toFixed(2));
+    type Split = { mode: PaymentMode; amount: number; referenceId?: string };
+    let splits: Split[] = [];
+
+    if (dto.payments && dto.payments.length > 0) {
+      splits = dto.payments
+        .filter((p) => p.amount > 0 && p.mode !== PaymentMode.CREDIT)
+        .map((p) => ({
+          mode: (p.mode as string) === 'CARD' ? PaymentMode.CASH : p.mode,
+          amount: parseFloat(p.amount.toFixed(2)),
+          referenceId: p.referenceId,
+        }));
+    } else {
+      // Single-payment fast path (unchanged behavior)
+      const paymentModeStr = dto.paymentMode?.toUpperCase();
+      const isCreditSale = paymentModeStr === 'CREDIT' || !paymentModeStr;
+      if (!isCreditSale) {
+        const requestedAmount = dto.amountPaid ?? finalAmount;
+        const actualPaidNow = Math.min(requestedAmount, finalAmount);
+        if (actualPaidNow > 0) {
+          splits = [
+            {
+              mode:
+                paymentModeStr === 'CARD'
+                  ? PaymentMode.CASH
+                  : (paymentModeStr as PaymentMode),
+              amount: parseFloat(actualPaidNow.toFixed(2)),
+              referenceId: dto.referenceId,
+            },
+          ];
+        }
+      }
+    }
+
+    // Total being paid right now across all splits
+    const paidNow = parseFloat(
+      splits.reduce((s, p) => s + p.amount, 0).toFixed(2),
+    );
+
+    // Guard: cannot pay more than the invoice total
+    if (paidNow > finalAmount + 0.01) {
+      throw new BadRequestException(
+        `Total paid (₹${paidNow}) exceeds invoice amount (₹${finalAmount}).`,
+      );
+    }
+
+    const newBalance = parseFloat((finalAmount - paidNow).toFixed(2));
+    const isFullyPaid = newBalance <= 0.01;
+    const isPartialPayment = paidNow > 0 && !isFullyPaid;
 
     let finalStatus: InvoiceStatus = invoice.status;
     let finalPaidAmount = 0;
     let finalBalanceDue = finalAmount;
 
-    if (!isCreditSale && actualPaidNow > 0) {
-      // Map "CARD" → "CASH" since DB enum doesn't have CARD
-      const dbPaymentMode: PaymentMode =
-        paymentModeStr === 'CARD'
-          ? PaymentMode.CASH
-          : (paymentModeStr as PaymentMode);
-
-      const paymentNumber = await this.generatePaymentNumber(companyId);
+    if (splits.length > 0) {
+      // Pre-generate sequential payment numbers (one per split) up front.
+      // Doing it before the txn keeps the numbering helper simple.
+      const baseNumber = await this.generatePaymentNumber(companyId);
+      // baseNumber looks like PAY-YYYYMMDD-NNN; derive sequential suffixes
+      const prefix = baseNumber.slice(0, baseNumber.lastIndexOf('-') + 1);
+      const startSerial = parseInt(
+        baseNumber.slice(baseNumber.lastIndexOf('-') + 1),
+        10,
+      );
 
       await this.prisma.$transaction(async (tx) => {
-        // Create payment record for the ACTUAL amount paid (not full invoice)
-        await tx.payment.create({
-          data: {
-            paymentNumber,
-            customerId: cart.customerId ?? null,
-            walkInName: cart.walkInName ?? null,
-            walkInPhone: cart.walkInPhone ?? null,
-            invoiceId: invoice.id,
-            companyId,
-            createdById: userId,
-            amount: actualPaidNow,
-            paymentMode: dbPaymentMode,
-            referenceId: dto.referenceId,
-            paymentDate: new Date(),
-          },
-        });
+        let runningBalance: number | null = null;
 
-        // Update invoice with correct paid/balance/status
+        for (let i = 0; i < splits.length; i++) {
+          const split = splits[i];
+          const paymentNumber =
+            prefix + String(startSerial + i).padStart(3, '0');
+
+          await tx.payment.create({
+            data: {
+              paymentNumber,
+              customerId: cart.customerId ?? null,
+              walkInName: cart.walkInName ?? null,
+              walkInPhone: cart.walkInPhone ?? null,
+              invoiceId: invoice.id,
+              companyId,
+              createdById: userId,
+              amount: split.amount,
+              paymentMode: split.mode,
+              referenceId: split.referenceId ?? null,
+              paymentDate: new Date(),
+            },
+          });
+
+          // Ledger + outstanding only for non-walk-in (real customers)
+          if (cart.customerId) {
+            await tx.customer.update({
+              where: { id: cart.customerId },
+              data: { outstandingBalance: { decrement: split.amount } },
+            });
+
+            const updated = await tx.customer.findUnique({
+              where: { id: cart.customerId },
+              select: { outstandingBalance: true },
+            });
+            runningBalance = updated!.outstandingBalance;
+
+            await tx.customerLedger.create({
+              data: {
+                customerId: cart.customerId,
+                companyId,
+                entryType: 'PAYMENT',
+                paymentMode: split.mode,
+                referenceNo: paymentNumber,
+                description:
+                  splits.length > 1
+                    ? `Split payment (${split.mode}) against ${invoice.invoiceNumber}`
+                    : isPartialPayment
+                      ? `Partial payment against ${invoice.invoiceNumber}`
+                      : `Payment against ${invoice.invoiceNumber}`,
+                debitAmount: 0,
+                creditAmount: split.amount,
+                balance: runningBalance,
+                entryDate: new Date(),
+              },
+            });
+          }
+        }
+
+        // Update invoice once with the summed totals
         await tx.invoice.update({
           where: { id: invoice.id },
           data: {
-            paidAmount: actualPaidNow,
+            paidAmount: paidNow,
             balanceDue: newBalance,
-            status: isPartialPayment
-              ? InvoiceStatus.PARTIAL
-              : InvoiceStatus.PAID,
+            status: isFullyPaid ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL,
           },
         });
-
-        // createInvoice already incremented customer outstanding by full totalAmount.
-        // Now decrement by what was actually paid — the unpaid remainder stays
-        // in outstanding, which is correct for partial payments.
-        if (cart.customerId) {
-          await tx.customer.update({
-            where: { id: cart.customerId },
-            data: { outstandingBalance: { decrement: actualPaidNow } },
-          });
-
-          const updatedCustomer = await tx.customer.findUnique({
-            where: { id: cart.customerId },
-            select: { outstandingBalance: true },
-          });
-
-          await tx.customerLedger.create({
-            data: {
-              customerId: cart.customerId,
-              companyId,
-              entryType: 'PAYMENT',
-              paymentMode: dbPaymentMode,
-              referenceNo: paymentNumber,
-              description: isPartialPayment
-                ? `Partial payment against ${invoice.invoiceNumber}`
-                : `Payment against ${invoice.invoiceNumber}`,
-              debitAmount: 0,
-              creditAmount: actualPaidNow,
-              balance: updatedCustomer!.outstandingBalance,
-              entryDate: new Date(),
-            },
-          });
-        }
       });
 
-      finalStatus = isPartialPayment
-        ? InvoiceStatus.PARTIAL
-        : InvoiceStatus.PAID;
-      finalPaidAmount = actualPaidNow;
+      finalStatus = isFullyPaid ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
+      finalPaidAmount = paidNow;
       finalBalanceDue = newBalance;
     }
 

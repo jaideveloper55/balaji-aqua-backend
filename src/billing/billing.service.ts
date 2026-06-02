@@ -388,7 +388,6 @@ export class BillingService {
           },
           payments: {
             orderBy: { paymentDate: 'desc' },
-            take: 1,
             select: { paymentMode: true },
           },
           _count: { select: { payments: true } },
@@ -643,6 +642,16 @@ export class BillingService {
       where.paymentDate = dateFilter;
     }
 
+    if (filters.search?.trim()) {
+      const q = filters.search.trim();
+      where.OR = [
+        { paymentNumber: { contains: q, mode: 'insensitive' } },
+        { invoice: { invoiceNumber: { contains: q, mode: 'insensitive' } } },
+        { customer: { name: { contains: q, mode: 'insensitive' } } },
+        { walkInName: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
     const [total, payments] = await Promise.all([
       this.prisma.payment.count({ where }),
       this.prisma.payment.findMany({
@@ -720,7 +729,10 @@ export class BillingService {
     }
 
     const isInMemorySort =
-      sortBy === 'risk' || sortBy === 'days' || sortBy === 'lastPaid';
+      sortBy === 'risk' ||
+      sortBy === 'days' ||
+      sortBy === 'lastPaid' ||
+      sortBy === 'newest';
 
     const dbOrderBy: Prisma.CustomerOrderByWithRelationInput =
       sortBy === 'amount'
@@ -745,7 +757,6 @@ export class BillingService {
           status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
         },
         orderBy: { invoiceDate: 'asc' as const },
-        take: 1,
         select: {
           invoiceDate: true,
           invoiceNumber: true,
@@ -774,6 +785,7 @@ export class BillingService {
     // ── Enrich with derived fields ─────────────────────────────────────
     const enriched = customers.map((c) => {
       const oldestInvoice = c.invoices[0];
+      const newestInvoice = c.invoices[c.invoices.length - 1];
       const lastPayment = c.ledger[0];
 
       const overdueDays = oldestInvoice
@@ -796,6 +808,7 @@ export class BillingService {
         overdueDays,
         risk,
         lastPaid: lastPayment?.entryDate ?? null,
+        newestInvoiceDate: newestInvoice?.invoiceDate ?? null,
         oldestUnpaidInvoice: oldestInvoice
           ? {
               number: oldestInvoice.invoiceNumber,
@@ -818,15 +831,20 @@ export class BillingService {
     } else if (sortBy === 'days') {
       filtered = filtered.sort((a, b) => b.overdueDays - a.overdueDays);
     } else if (sortBy === 'lastPaid') {
-      // No-payment customers first (riskiest), then oldest payment date first
       filtered = filtered.sort((a, b) => {
         if (!a.lastPaid && !b.lastPaid) return 0;
         if (!a.lastPaid) return -1;
         if (!b.lastPaid) return 1;
         return a.lastPaid.getTime() - b.lastPaid.getTime();
       });
+    } else if (sortBy === 'newest') {
+      // Most recently invoiced customers first
+      filtered = filtered.sort((a, b) => {
+        const ad = a.newestInvoiceDate?.getTime() ?? 0;
+        const bd = b.newestInvoiceDate?.getTime() ?? 0;
+        return bd - ad;
+      });
     }
-    // sortBy === 'amount' is already correctly ordered from DB
 
     // ── Paginate after in-memory sort ──────────────────────────────────
     const paginated = isInMemorySort
