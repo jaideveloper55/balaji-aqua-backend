@@ -13,7 +13,7 @@ import {
 export class QueryProductDto {
   @IsOptional()
   @IsString()
-  search?: string; // matches name, sku, id
+  search?: string;
 
   @IsOptional()
   @IsString()

@@ -14,9 +14,9 @@ enum CompanyType {
 
 enum Role {
   SUPER_ADMIN
-  ADMIN        // company manager
-  STAFF        // office staff
-  DELIVERY_BOY // only sees assigned deliveries
+  ADMIN
+  STAFF
+  DELIVERY_BOY
 }
 
 enum Gender {
@@ -102,13 +102,14 @@ model Company {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  userCompanies UserCompany[]
-  customers     Customer[]
-  categories    Category[]
-  products      Product[]
-  invoices      Invoice[]
-  payments      Payment[]
-  carts         Cart[]
+  userCompanies  UserCompany[]
+  customers      Customer[]
+  categories     Category[]
+  products       Product[]
+  invoices       Invoice[]
+  payments       Payment[]
+  carts          Cart[]
+  stockMovements StockMovement[]
 
   @@map("companies")
 }
@@ -133,6 +134,8 @@ model User {
   payments      Payment[]     @relation("PaymentCreatedBy")
   carts         Cart[]
 
+  stockMovements StockMovement[] @relation("StockMovementCreatedBy")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -155,11 +158,9 @@ model UserCompany {
 }
 
 // ─── CUSTOMER ───────────────────────────────────────────────────────────────
-// Customer is scoped to ONE company.
-// Same person can exist as a customer in BOTH companies — they're separate
-// records (water plant subscription is independent from beverage subscription).
+
 model Customer {
-  id           String         @id @default(cuid())
+  id           String @id @default(cuid())
   customerCode String
 
   name   String
@@ -194,20 +195,13 @@ model Customer {
   updatedAt DateTime @updatedAt
 
   @@unique([customerCode, companyId])
-  // ↑ CUS-001 can exist in Water Plant AND Beverages — but not twice in the same company
-
   @@unique([phone, companyId])
-  // ↑ Same phone can exist in both companies (one person uses both businesses)
-  //    but cannot duplicate within the same company (no double-entry mistakes)
-
   @@index([companyId])
   @@index([companyId, status])
   @@map("customers")
 }
 
 // ─── CUSTOMER PRICING ───────────────────────────────────────────────────────
-// Per-customer custom pricing (e.g. bulk customer gets a special rate).
-// Multiple rows over time form a price history (effectiveFrom/To).
 model CustomerPricing {
   id            String    @id @default(cuid())
   customerId    String
@@ -229,13 +223,12 @@ model CustomerPricing {
 }
 
 // ─── CUSTOMER LEDGER ────────────────────────────────────────────────────────
-// Running list of money events per customer (invoices, payments, adjustments).
-// `balance` is the running balance after this entry — denormalized for speed.
+
 model CustomerLedger {
   id          String          @id @default(cuid())
   customerId  String
   customer    Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  paymentMode PaymentMode? 
+  paymentMode PaymentMode?
   entryType   LedgerEntryType
   referenceNo String
   description String
@@ -262,8 +255,7 @@ model CustomerLedger {
 }
 
 // ─── CATEGORY ───────────────────────────────────────────────────────────────
-// Categories are scoped per company.
-// e.g. Water Plant has [Water Can, Bottle, Filter] — Beverage has [Soft Drink, Energy Drink]
+
 model Category {
   id          String  @id @default(cuid())
   name        String
@@ -289,9 +281,9 @@ model Category {
 }
 
 // ─── PRODUCT ────────────────────────────────────────────────────────────────
-// Products are scoped per company. Each product belongs to exactly one category.
+
 model Product {
-  id          String        @id @default(cuid())
+  id          String  @id @default(cuid())
   name        String
   sku         String
   description String?
@@ -308,6 +300,11 @@ model Product {
   // ─── Inventory ───
   stock    Int @default(0)
   minStock Int @default(0)
+
+  reserved Int @default(0)
+  damaged  Int @default(0)
+
+  stockMovements StockMovement[]
 
   // ─── Relations ───
   categoryId String
@@ -335,8 +332,8 @@ model Invoice {
   invoiceNumber String
 
   // Customer can be null for walk-in sales
-  customerId String?
-  customer   Customer? @relation(fields: [customerId], references: [id])
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id])
   // Walk-in customer info (used when customerId is null)
   walkInName  String?
   walkInPhone String?
@@ -390,7 +387,6 @@ model InvoiceItem {
   productId String
   product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  // Snapshot values at time of sale (prices can change later, invoice must not)
   productName String // snapshot of product name
   sku         String // snapshot of SKU
   unit        String // snapshot of unit (PCS, LITRE, etc.)
@@ -502,22 +498,80 @@ model CartItem {
   productId String
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  // Snapshot at time of adding (in case price changes while cart is open)
   productName String
   sku         String
   unit        String
 
   quantity  Int
-  unitPrice Float // effective price (custom or base)
-  lineTotal Float // quantity × unitPrice (before tax)
+  unitPrice Float
+  lineTotal Float
 
   companyId String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Same product cannot appear twice in same cart — instead qty increases
   @@unique([cartId, productId])
   @@index([cartId])
   @@map("cart_items")
+}
+
+enum MovementType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
+}
+
+// MOVEMENT SOURCE ENUM
+enum MovementSource {
+  // Stock In reasons
+  PRODUCTION
+  PURCHASE
+  CUSTOMER_RETURN
+  OPENING_STOCK
+
+  // Stock Out reasons
+  DELIVERY
+  INTERNAL_USE
+  DAMAGE
+
+  // Adjust reason
+  STOCK_COUNT_CORRECTION
+}
+
+// STOCK MOVEMENT MODEL
+
+model StockMovement {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  productName String
+  sku         String
+  unit        String
+
+  type   MovementType
+  source MovementSource
+
+  quantity Int
+
+  balanceAfter Int
+
+  referenceId String?
+  remarks     String?
+
+  createdById String
+  createdBy   User   @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([companyId])
+  @@index([companyId, createdAt])
+  @@index([productId])
+  @@index([companyId, type])
+  @@map("stock_movements")
 }
