@@ -63,7 +63,8 @@ export class AuthService {
     // Filter to only ACTIVE companies the user has access to
     const companies = user.userCompanies
       .map((uc) => uc.company)
-      .filter((c) => c.isActive);
+      .filter((c) => c.isActive)
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     if (companies.length === 0)
       throw new UnauthorizedException(
@@ -72,7 +73,8 @@ export class AuthService {
 
     // Default active = first company.
     // Frontend overrides from localStorage if user previously selected one.
-    const activeCompany = companies[0];
+    const activeCompany =
+      companies.find((c) => c.type === 'WATER_PLANT') ?? companies[0];
 
     const tokens = await this.generateTokens({
       sub: user.id,

@@ -65,6 +65,7 @@ export class ProductsService {
       search,
       categoryId,
       status,
+      isSellable,
       dateFrom,
       dateTo,
       page = 1,
@@ -72,11 +73,17 @@ export class ProductsService {
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = query;
-
-    const where: Prisma.ProductWhereInput = { companyId };
+    const where: Prisma.ProductWhereInput = {
+      companyId,
+    };
 
     if (categoryId) where.categoryId = categoryId;
     if (status) where.status = status;
+
+    if (typeof isSellable === 'boolean') {
+      where.isSellable = isSellable;
+    }
+
     if (dateFrom || dateTo) {
       where.createdAt = {};
       if (dateFrom) where.createdAt.gte = new Date(dateFrom);
@@ -112,6 +119,7 @@ export class ProductsService {
       },
     };
   }
+
 
   // ─── STATS — for the 4 dashboard cards ───
   async getStats(companyId: string) {
@@ -235,22 +243,46 @@ export class ProductsService {
   // ─── DELETE ───
   async remove(companyId: string, id: string) {
     await this.findOne(companyId, id);
-    await this.prisma.product.delete({ where: { id } });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.stockMovement.deleteMany({ where: { productId: id } });
+      await tx.invoiceItem.deleteMany({ where: { productId: id } });
+      await tx.cartItem.deleteMany({ where: { productId: id } });
+      await tx.product.delete({ where: { id } });
+    });
+
     return { message: 'Product deleted successfully' };
   }
 
   // ─── BULK DELETE ───
+
   async removeMany(companyId: string, ids: string[]) {
-    if (!ids?.length) {
-      throw new BadRequestException('No product IDs provided');
+    if (!ids?.length) throw new BadRequestException('No product IDs provided');
+
+    // verify all belong to this company (tenant safety)
+    const owned = await this.prisma.product.findMany({
+      where: { id: { in: ids }, companyId },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((p) => p.id);
+    if (ownedIds.length === 0) {
+      throw new BadRequestException('No matching products found');
     }
 
-    const result = await this.prisma.product.deleteMany({
-      where: { id: { in: ids }, companyId },
+    // Delete children then parents, atomically
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.stockMovement.deleteMany({
+        where: { productId: { in: ownedIds } },
+      });
+      await tx.invoiceItem.deleteMany({
+        where: { productId: { in: ownedIds } },
+      });
+      await tx.cartItem.deleteMany({ where: { productId: { in: ownedIds } } });
+      return tx.product.deleteMany({ where: { id: { in: ownedIds } } });
     });
 
     return {
-      message: `${result.count} product(s) deleted`,
+      message: `${result.count} product(s) permanently deleted`,
       count: result.count,
     };
   }

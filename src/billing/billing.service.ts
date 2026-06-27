@@ -884,7 +884,7 @@ export class BillingService {
     };
   }
 
-  // 8. DAILY SUMMARY  (now accepts dateFrom/dateTo range)
+  //  DAILY SUMMARY  (now accepts dateFrom/dateTo range)
 
   async getDailySummary(companyId: string, filters: DailySummaryFilterDto) {
     const hasDates = !!(filters.date || filters.dateFrom || filters.dateTo);
@@ -982,14 +982,16 @@ export class BillingService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 9. GET POS PRODUCTS
-  // ─────────────────────────────────────────────────────────────────────────
+  // GET POS PRODUCTS
+
   async getPOSProducts(companyId: string, search?: string) {
     const where: Prisma.ProductWhereInput = {
       companyId,
       status: 'ACTIVE',
       stock: { gt: 0 },
+      category: {
+        name: 'Finished Goods',
+      },
     };
 
     if (search) {
@@ -1006,9 +1008,8 @@ export class BillingService {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 10. GET CUSTOMER PRICE
-  // ─────────────────────────────────────────────────────────────────────────
+  //  GET CUSTOMER PRICE
+
   async getCustomerPrice(
     customerId: string,
     productId: string,

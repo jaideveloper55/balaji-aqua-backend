@@ -11,8 +11,9 @@ import { StockInDto } from 'src/inventory/dto/Stock in.dto';
 import { StockOutDto } from 'src/inventory/dto/Stock out.dto';
 import { AdjustStockDto } from 'src/inventory/dto/Adjust stock.dto';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
+import { CompanyScopeGuard } from 'src/common/guards/company-scope.guard';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, CompanyScopeGuard)
 @Controller('inventory')
 export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}

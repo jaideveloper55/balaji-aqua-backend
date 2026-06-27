@@ -37,10 +37,10 @@ export class InventoryService {
     stock: number;
     reserved: number;
     minStock: number;
+    isSellable: boolean;
     category?: { id: string; name: string } | null;
   }) {
     const available = p.stock - p.reserved;
-    // Stock health % = available against (available + reserved), clamped 0..100
     const denom = p.stock <= 0 ? 1 : p.stock;
     const healthPct = Math.max(
       0,
@@ -58,6 +58,7 @@ export class InventoryService {
       available,
       reorderLevel: p.minStock,
       stockHealth: healthPct,
+      isSellable: p.isSellable,
       status: this.deriveStatus(p.stock, p.reserved, p.minStock),
     };
   }
@@ -219,10 +220,13 @@ export class InventoryService {
   }
 
   //  STOCK LIST
+
   async getStockList(query: StockListQueryDto, companyId: string) {
     const { search, status, categoryId, page = 1, limit = 20 } = query;
 
-    const where: Prisma.ProductWhereInput = { companyId };
+    const where: Prisma.ProductWhereInput = {
+      companyId,
+    };
 
     if (search) {
       where.OR = [
@@ -232,7 +236,6 @@ export class InventoryService {
     }
     if (categoryId) where.categoryId = categoryId;
 
-    // Fetch matching products (status is derived, so we filter after shaping)
     const all = await this.prisma.product.findMany({
       where,
       include: { category: { select: { id: true, name: true } } },
@@ -264,17 +267,17 @@ export class InventoryService {
   //  LOW STOCK ALERTS
   async getLowStockAlerts(companyId: string) {
     const products = await this.prisma.product.findMany({
-      where: { companyId },
+      where: { companyId, isSellable: true },
       include: { category: { select: { id: true, name: true } } },
       orderBy: { stock: 'asc' },
     });
 
     const alerts = products
       .map((p) => this.shapeProductRow(p))
-      .filter((r) => r.status !== 'IN_STOCK') // low or out
+      .filter((r) => r.status !== 'IN_STOCK')
       .map((r) => ({
         ...r,
-        deficit: r.available - r.reorderLevel, // negative number, e.g. -200
+        deficit: r.available - r.reorderLevel,
         critical: r.status === 'OUT_OF_STOCK',
       }));
 
@@ -355,7 +358,7 @@ export class InventoryService {
   //  KPI SUMMARY
   async getSummary(companyId: string) {
     const products = await this.prisma.product.findMany({
-      where: { companyId },
+      where: { companyId, isSellable: true },
       select: {
         stock: true,
         reserved: true,

@@ -292,6 +292,8 @@ model Product {
   unit   ProductUnit   @default(PCS)
   status ProductStatus @default(ACTIVE)
 
+  isSellable Boolean @default(true)
+
   // ─── Pricing ───
   basePrice Float
   costPrice Float @default(0)

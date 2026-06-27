@@ -5,12 +5,24 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import type { JwtPayload } from '../decorators/current-user.decorator';
+import { IS_PUBLIC_KEY } from './jwt-auth.guard';
 
 @Injectable()
 export class CompanyScopeGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
   canActivate(context: ExecutionContext): boolean {
+    // Skip the company check on @Public() routes (login, register, refresh).
+    // These run BEFORE a user/company exists, so they can't be scoped.
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) return true;
+
     const request = context.switchToHttp().getRequest();
     const user = request.user as JwtPayload;
 

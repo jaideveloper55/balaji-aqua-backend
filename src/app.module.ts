@@ -14,6 +14,7 @@ import { CustomersModule } from './customers/customers.module';
 import { ProductsModule } from './products/products.module';
 import { BillingModule } from './billing/billing.module';
 import { InventoryModule } from './inventory/Inventory.module';
+import { CompanyScopeGuard } from './common/guards/company-scope.guard';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { InventoryModule } from './inventory/Inventory.module';
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
+    { provide: APP_GUARD, useClass: CompanyScopeGuard },
   ],
 })
 export class AppModule {}

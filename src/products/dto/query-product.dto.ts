@@ -1,6 +1,7 @@
 import { ProductStatus } from '@prisma/client';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -23,6 +24,17 @@ export class QueryProductDto {
   @IsEnum(ProductStatus)
   status?: ProductStatus;
 
+  // Sellable filter
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return undefined;
+  })
+  @IsBoolean()
+  isSellable?: boolean;
+
   @IsOptional()
   @IsDateString()
   dateFrom?: string;
@@ -31,7 +43,6 @@ export class QueryProductDto {
   @IsDateString()
   dateTo?: string;
 
-  // ─── Pagination ───
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -45,7 +56,6 @@ export class QueryProductDto {
   @Max(100)
   pageSize?: number = 10;
 
-  // ─── Sorting ───
   @IsOptional()
   @IsString()
   sortBy?: 'name' | 'sku' | 'basePrice' | 'stock' | 'createdAt' = 'createdAt';
