@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, ProductStatus } from '@prisma/client';
@@ -9,10 +10,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
+import { NotificationService } from 'src/notifications/notification.service';
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ProductsService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   // ─── CREATE ───
   async create(companyId: string, dto: CreateProductDto) {
@@ -120,7 +126,6 @@ export class ProductsService {
     };
   }
 
-
   // ─── STATS — for the 4 dashboard cards ───
   async getStats(companyId: string) {
     const [total, active, outOfStock, lowStock] = await Promise.all([
@@ -217,7 +222,7 @@ export class ProductsService {
     const status = this.deriveStatus(newStock, dto.status ?? existing.status);
 
     try {
-      return await this.prisma.product.update({
+      const updated = await this.prisma.product.update({
         where: { id },
         data: {
           ...dto,
@@ -225,8 +230,35 @@ export class ProductsService {
           name: dto.name?.trim(),
           status,
         },
-        include: { category: true },
+        include: {
+          category: true,
+          company: { select: { name: true } },
+        },
       });
+
+      const stockChanged =
+        dto.stock !== undefined && dto.stock !== existing.stock;
+      if (stockChanged) {
+        if (updated.stock === 0) {
+          void this.notifications.notifyOutOfStock({
+            companyName: updated.company.name,
+            productName: updated.name,
+            sku: updated.sku,
+            unit: updated.unit,
+          });
+        } else if (updated.minStock > 0 && updated.stock <= updated.minStock) {
+          void this.notifications.notifyLowStock({
+            companyName: updated.company.name,
+            productName: updated.name,
+            sku: updated.sku,
+            stock: updated.stock,
+            minStock: updated.minStock,
+            unit: updated.unit,
+          });
+        }
+      }
+
+      return updated;
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&

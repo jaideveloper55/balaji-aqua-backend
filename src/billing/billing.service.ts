@@ -4,6 +4,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Cron } from '@nestjs/schedule';
+import { Logger } from '@nestjs/common';
 import {
   CreateInvoiceDto,
   CreatePaymentDto,
@@ -13,6 +15,7 @@ import {
   DailySummaryFilterDto,
 } from './dto/billing.dto';
 import { Invoice, InvoiceStatus, InvoiceType, Prisma } from '@prisma/client';
+import { NotificationService } from 'src/notifications/notification.service';
 
 interface ProcessedItem {
   productId: string;
@@ -41,7 +44,11 @@ interface LineItemInput {
 
 @Injectable()
 export class BillingService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(BillingService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   // ─── HELPER: Generate Invoice Number ─────────────────────────────────────
   private async generateInvoiceNumber(companyId: string): Promise<string> {
@@ -165,9 +172,8 @@ export class BillingService {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 1. CREATE INVOICE
-  // ─────────────────────────────────────────────────────────────────────────
+  // CREATE INVOICE
+
   async createInvoice(
     dto: CreateInvoiceDto,
     companyId: string,
@@ -304,9 +310,8 @@ export class BillingService {
     return invoice;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 2. LIST INVOICES
-  // ─────────────────────────────────────────────────────────────────────────
+  // LIST INVOICES
+
   async findAllInvoices(filters: InvoiceFilterDto, companyId: string) {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
@@ -435,9 +440,8 @@ export class BillingService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 3. GET SINGLE INVOICE
-  // ─────────────────────────────────────────────────────────────────────────
+  //  GET SINGLE INVOICE
+
   async findInvoiceById(id: string, companyId: string) {
     const invoice = await this.prisma.invoice.findFirst({
       where: { id, companyId },
@@ -518,9 +522,8 @@ export class BillingService {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 5. RECORD PAYMENT
-  // ─────────────────────────────────────────────────────────────────────────
+  // RECORD PAYMENT
+
   async createPayment(
     dto: CreatePaymentDto,
     companyId: string,
@@ -618,9 +621,8 @@ export class BillingService {
     return { message: 'Payment recorded successfully', paymentNumber };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 6. LIST PAYMENTS
-  // ─────────────────────────────────────────────────────────────────────────
+  // LIST PAYMENTS
+
   async findAllPayments(filters: PaymentFilterDto, companyId: string) {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
@@ -704,7 +706,7 @@ export class BillingService {
     };
   }
 
-  // 7. OUTSTANDING DUES
+  //  OUTSTANDING DUES
 
   async getOutstanding(filters: OutstandingFilterDto, companyId: string) {
     const page = filters.page ?? 1;
@@ -782,7 +784,7 @@ export class BillingService {
           }),
     ]);
 
-    // ── Enrich with derived fields ─────────────────────────────────────
+    //  Enrich with derived fields
     const enriched = customers.map((c) => {
       const oldestInvoice = c.invoices[0];
       const newestInvoice = c.invoices[c.invoices.length - 1];
@@ -846,12 +848,12 @@ export class BillingService {
       });
     }
 
-    // ── Paginate after in-memory sort ──────────────────────────────────
+    //  Paginate after in-memory sort
     const paginated = isInMemorySort
       ? filtered.slice(skip, skip + limit)
       : filtered;
 
-    // ── Summary stats ──────────────────────────────────────────────────
+    //  Summary stats
     const summary = await this.prisma.customer.aggregate({
       where: { companyId, outstandingBalance: { gt: 0 }, status: 'ACTIVE' },
       _sum: { outstandingBalance: true },
@@ -1036,5 +1038,64 @@ export class BillingService {
     });
 
     return product?.basePrice ?? 0;
+  }
+
+  // DAILY SALES REPORT
+  // @Cron('* * * * *')
+  @Cron('0 15 * * *')
+  async sendDailySalesReport(): Promise<void> {
+    this.logger.log('📊 Running daily sales report cron job...');
+
+    try {
+      // Get all companies  each company gets their own report
+      const companies = await this.prisma.company.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+      });
+      const todayIST = new Date().toLocaleDateString('en-CA', {
+        timeZone: 'Asia/Kolkata',
+      });
+
+      for (const company of companies) {
+        try {
+          const summary = await this.getDailySummary(company.id, {
+            date: todayIST,
+          });
+
+          // skip companies with zero activity today
+          if (
+            summary.invoices.count === 0 &&
+            summary.newCustomers === 0 &&
+            summary.payments.total === 0
+          ) {
+            this.logger.log(`⏭️ Skipping ${company.name} — no activity today`);
+            continue;
+          }
+
+          await this.notifications.notifyDailySummary({
+            companyName: company.name,
+            date: new Date().toLocaleDateString('en-IN', {
+              timeZone: 'Asia/Kolkata',
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+            }),
+            totalSales: summary.invoices.totalBilled,
+            totalDeliveries: summary.invoices.count,
+            pendingDeliveries: summary.creditSalesCount,
+            newCustomers: summary.newCustomers,
+            overduePayments: Math.round(summary.creditSales),
+          });
+
+          this.logger.log(`✅ Daily report sent for ${company.name}`);
+        } catch (companyError) {
+          this.logger.error(
+            `Failed to send report for ${company.name}: ${companyError}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Daily sales cron job failed: ${error}`);
+    }
   }
 }

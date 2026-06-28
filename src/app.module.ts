@@ -15,6 +15,8 @@ import { ProductsModule } from './products/products.module';
 import { BillingModule } from './billing/billing.module';
 import { InventoryModule } from './inventory/Inventory.module';
 import { CompanyScopeGuard } from './common/guards/company-scope.guard';
+import { NotificationsModule } from './notifications/notifications.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -23,6 +25,8 @@ import { CompanyScopeGuard } from './common/guards/company-scope.guard';
       envFilePath: '.env',
       cache: true,
     }),
+
+    ScheduleModule.forRoot(),
 
     // Rate limiting — 10 req/sec, 100 req/min per IP
     ThrottlerModule.forRoot([
@@ -37,6 +41,7 @@ import { CompanyScopeGuard } from './common/guards/company-scope.guard';
     ProductsModule,
     InventoryModule,
     BillingModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [

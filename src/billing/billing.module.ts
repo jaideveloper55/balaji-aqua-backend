@@ -6,10 +6,12 @@ import { CartService } from './cart.service';
 import { BillingController } from './billing.controller';
 import { ExportController } from './export.controller';
 import { ExportService } from './export.service';
+import { ScheduleModule } from '@nestjs/schedule';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { PdfHelper } from './pdf.helper';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ScheduleModule, NotificationsModule],
   controllers: [BillingController, CartController, ExportController],
   providers: [BillingService, CartService, ExportService, PdfHelper],
   exports: [BillingService],
