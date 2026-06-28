@@ -92,6 +92,37 @@ export class BillingService {
     return prefix + String(nextSerial).padStart(3, '0');
   }
 
+  // ─── STOCK ALERT HELPER ───
+  private async checkAndNotifyStock(
+    productId: string,
+    companyId: string,
+  ): Promise<void> {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, companyId },
+      include: { company: { select: { name: true } } },
+    });
+
+    if (!product) return;
+
+    if (product.stock === 0) {
+      void this.notifications.notifyOutOfStock({
+        companyName: product.company.name,
+        productName: product.name,
+        sku: product.sku,
+        unit: product.unit,
+      });
+    } else if (product.minStock > 0 && product.stock <= product.minStock) {
+      void this.notifications.notifyLowStock({
+        companyName: product.company.name,
+        productName: product.name,
+        sku: product.sku,
+        stock: product.stock,
+        minStock: product.minStock,
+        unit: product.unit,
+      });
+    }
+  }
+
   // ─── HELPER: Calculate Totals ─────────────────────────────────────────────
   private calculateTotals(
     items: LineItemInput[],
@@ -306,7 +337,9 @@ export class BillingService {
 
       return newInvoice;
     });
-
+    for (const item of processedItems) {
+      void this.checkAndNotifyStock(item.productId, companyId);
+    }
     return invoice;
   }
 

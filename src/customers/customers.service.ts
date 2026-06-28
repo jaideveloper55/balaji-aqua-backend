@@ -553,7 +553,6 @@ export class CustomersService {
       entries,
       exportedAt: new Date(),
       totalEntries: entries.length,
-      // Frontend uses exportFormat from query to decide PDF vs CSV rendering
     };
   }
 }

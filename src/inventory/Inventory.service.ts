@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, MovementType, MovementSource } from '@prisma/client';
@@ -13,10 +14,15 @@ import {
   StockListQueryDto,
   StockStatusFilter,
 } from './dto/Query.dto';
+import { NotificationService } from 'src/notifications/notification.service';
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(InventoryService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   private deriveStatus(
     stock: number,
@@ -63,11 +69,42 @@ export class InventoryService {
     };
   }
 
+  // TELEGRAM ALERT HELPER
+
+  private async checkAndNotifyStock(
+    productId: string,
+    companyId: string,
+  ): Promise<void> {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, companyId },
+      include: { company: { select: { name: true } } },
+    });
+
+    if (!product) return;
+
+    if (product.stock === 0) {
+      void this.notifications.notifyOutOfStock({
+        companyName: product.company.name,
+        productName: product.name,
+        sku: product.sku,
+        unit: product.unit,
+      });
+    } else if (product.minStock > 0 && product.stock <= product.minStock) {
+      void this.notifications.notifyLowStock({
+        companyName: product.company.name,
+        productName: product.name,
+        sku: product.sku,
+        stock: product.stock,
+        minStock: product.minStock,
+        unit: product.unit,
+      });
+    }
+  }
+
   //  STOCK IN
   async stockIn(dto: StockInDto, companyId: string, userId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const product = await this.lockProduct(tx, dto.productId, companyId);
-
       const newStock = product.stock + dto.quantity;
 
       await tx.product.update({
@@ -94,17 +131,19 @@ export class InventoryService {
 
       return { movement, product: { id: product.id, stock: newStock } };
     });
+
+    // Check AFTER transaction commits stock is now saved in DB
+    void this.checkAndNotifyStock(dto.productId, companyId);
+
+    return result;
   }
 
   //  STOCK OUT
   async stockOut(dto: StockOutDto, companyId: string, userId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const product = await this.lockProduct(tx, dto.productId, companyId);
-
       const available = product.stock - product.reserved;
 
-      // Cannot issue more than what is AVAILABLE (not just physical stock),
-      // otherwise you eat into reserved/committed units.
       if (dto.quantity > available) {
         throw new BadRequestException(
           `Cannot issue ${dto.quantity} ${product.unit}. Only ${available} available ` +
@@ -119,7 +158,6 @@ export class InventoryService {
         where: { id: product.id },
         data: {
           stock: newStock,
-          // Damage / Breakage also feeds the "Damaged Items" KPI card
           ...(isDamage ? { damaged: { increment: dto.quantity } } : {}),
         },
       });
@@ -143,13 +181,17 @@ export class InventoryService {
 
       return { movement, product: { id: product.id, stock: newStock } };
     });
+
+    // Check AFTER transaction commits
+    void this.checkAndNotifyStock(dto.productId, companyId);
+
+    return result;
   }
 
   // ADJUST
   async adjust(dto: AdjustStockDto, companyId: string, userId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const product = await this.lockProduct(tx, dto.productId, companyId);
-
       const delta = dto.countedQuantity - product.stock;
 
       if (delta === 0) {
@@ -158,7 +200,6 @@ export class InventoryService {
         );
       }
 
-      // A downward correction can't take physical stock below what's reserved.
       if (dto.countedQuantity < product.reserved) {
         throw new BadRequestException(
           `Counted quantity (${dto.countedQuantity}) is less than reserved (${product.reserved}). ` +
@@ -179,7 +220,7 @@ export class InventoryService {
           unit: product.unit,
           type: MovementType.ADJUSTMENT,
           source: MovementSource.STOCK_COUNT_CORRECTION,
-          quantity: delta, // signed: +/-
+          quantity: delta,
           balanceAfter: dto.countedQuantity,
           referenceId: dto.referenceId,
           remarks: dto.remarks,
@@ -194,6 +235,11 @@ export class InventoryService {
         delta,
       };
     });
+
+    // Check AFTER transaction commits
+    void this.checkAndNotifyStock(dto.productId, companyId);
+
+    return result;
   }
 
   private async lockProduct(

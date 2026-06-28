@@ -238,7 +238,10 @@ export class ProductsService {
 
       const stockChanged =
         dto.stock !== undefined && dto.stock !== existing.stock;
-      if (stockChanged) {
+      const minStockChanged =
+        dto.minStock !== undefined && dto.minStock !== existing.minStock;
+
+      if (stockChanged || minStockChanged) {
         if (updated.stock === 0) {
           void this.notifications.notifyOutOfStock({
             companyName: updated.company.name,
