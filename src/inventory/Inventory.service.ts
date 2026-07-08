@@ -8,7 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, MovementType, MovementSource } from '@prisma/client';
 import { AdjustStockDto } from './dto/Adjust stock.dto';
 import { StockInDto } from './dto/Stock in.dto';
-import { StockOutDto, StockOutSource } from './dto/Stock out.dto';
+import { StockOutDto } from './dto/Stock out.dto';
 import {
   MovementHistoryQueryDto,
   StockListQueryDto,
@@ -83,21 +83,35 @@ export class InventoryService {
     if (!product) return;
 
     if (product.stock === 0) {
-      void this.notifications.notifyOutOfStock({
-        companyName: product.company.name,
-        productName: product.name,
-        sku: product.sku,
-        unit: product.unit,
-      });
+      void this.notifications
+        .notifyOutOfStock({
+          companyName: product.company.name,
+          productName: product.name,
+          sku: product.sku,
+          unit: product.unit,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to send out-of-stock notification for ${product.sku}`,
+            err,
+          );
+        });
     } else if (product.minStock > 0 && product.stock <= product.minStock) {
-      void this.notifications.notifyLowStock({
-        companyName: product.company.name,
-        productName: product.name,
-        sku: product.sku,
-        stock: product.stock,
-        minStock: product.minStock,
-        unit: product.unit,
-      });
+      void this.notifications
+        .notifyLowStock({
+          companyName: product.company.name,
+          productName: product.name,
+          sku: product.sku,
+          stock: product.stock,
+          minStock: product.minStock,
+          unit: product.unit,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to send low-stock notification for ${product.sku}`,
+            err,
+          );
+        });
     }
   }
 
@@ -119,7 +133,7 @@ export class InventoryService {
           sku: product.sku,
           unit: product.unit,
           type: MovementType.STOCK_IN,
-          source: dto.source as unknown as MovementSource,
+          source: dto.source,
           quantity: dto.quantity,
           balanceAfter: newStock,
           referenceId: dto.referenceId,
@@ -152,7 +166,7 @@ export class InventoryService {
       }
 
       const newStock = product.stock - dto.quantity;
-      const isDamage = dto.source === StockOutSource.DAMAGE;
+      const isDamage = dto.source === MovementSource.DAMAGE;
 
       await tx.product.update({
         where: { id: product.id },
@@ -169,7 +183,7 @@ export class InventoryService {
           sku: product.sku,
           unit: product.unit,
           type: MovementType.STOCK_OUT,
-          source: dto.source as unknown as MovementSource,
+          source: dto.source,
           quantity: -dto.quantity,
           balanceAfter: newStock,
           referenceId: dto.referenceId,

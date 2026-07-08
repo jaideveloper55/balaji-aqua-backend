@@ -6,16 +6,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
-import {
-  QueryCustomerDto,
-  UpdateCustomerDto,
-} from './dto/Update query customer.dto';
+import { QueryCustomerDto } from './dto/query-customer.dto';
 import { QueryLedgerDto } from './dto/query-ledger.dto';
 import { CreateLedgerEntryDto } from './dto/customer-ledger.dto';
 import {
   CreateCustomerPricingDto,
   UpdateCustomerPricingDto,
 } from './dto/customer-pricing.dto';
+import { UpdateCustomerDto } from './dto/Update query customer.dto';
 
 @Injectable()
 export class CustomersService {
@@ -37,14 +35,19 @@ export class CustomersService {
         `Phone ${createCustomerDto.phone} already exists`,
       );
     }
-    const customerCode = await this.generateCustomerCode(companyId);
-    return this.prisma.customer.create({
-      data: {
-        ...createCustomerDto,
-        customerCode,
-        companyId,
-        status: 'ACTIVE',
-      },
+
+    return this.prisma.$transaction(async (tx) => {
+      const count = await tx.customer.count({ where: { companyId } });
+      const customerCode = `CUS-${String(count + 1).padStart(3, '0')}`;
+
+      return tx.customer.create({
+        data: {
+          ...createCustomerDto,
+          customerCode,
+          companyId,
+          status: 'ACTIVE',
+        },
+      });
     });
   }
 
@@ -215,7 +218,20 @@ export class CustomersService {
 
   // DELETE — DELETE /customers/:id
   async remove(id: string, companyId: string) {
-    await this.findOne(id, companyId);
+    const customer = await this.findOne(id, companyId);
+
+    const ledgerCount = await this.prisma.customerLedger.count({
+      where: { customerId: id, companyId },
+    });
+
+    if (ledgerCount > 0) {
+      throw new ConflictException(
+        `Cannot delete ${customer.name} — they have ${ledgerCount} ledger ` +
+          `entries with financial history. Set status to INACTIVE instead to ` +
+          `hide them from active lists while preserving records.`,
+      );
+    }
+
     await this.prisma.customer.delete({ where: { id } });
     return { message: 'Customer deleted successfully', id };
   }
@@ -318,6 +334,15 @@ export class CustomersService {
   ) {
     await this.findOne(customerId, companyId);
 
+    const product = await this.prisma.product.findFirst({
+      where: { id: dto.productId, companyId },
+    });
+    if (!product) {
+      throw new NotFoundException(
+        `Product #${dto.productId} not found in this company`,
+      );
+    }
+
     // Check if an active price already exists for this product+customer combo
     const existing = await this.prisma.customerPricing.findFirst({
       where: {
@@ -364,6 +389,17 @@ export class CustomersService {
     if (!pricing)
       throw new NotFoundException(`Pricing rule #${pricingId} not found`);
 
+    if (dto.productId !== undefined) {
+      const product = await this.prisma.product.findFirst({
+        where: { id: dto.productId, companyId },
+      });
+      if (!product) {
+        throw new NotFoundException(
+          `Product #${dto.productId} not found in this company`,
+        );
+      }
+    }
+
     return this.prisma.customerPricing.update({
       where: { id: pricingId },
       data: {
@@ -401,7 +437,7 @@ export class CustomersService {
   ) {
     await this.findOne(customerId, companyId);
 
-    const { entryType, search } = query;
+    const { entryType, search, page = 1, limit = 50 } = query;
 
     const fromDate = query.fromDate ?? query.startDate;
     const toDate = query.toDate ?? query.endDate;
@@ -412,7 +448,6 @@ export class CustomersService {
       where.entryDate = {};
       if (fromDate) where.entryDate.gte = new Date(fromDate);
       if (toDate) {
-        // include the entire end day
         const end = new Date(toDate);
         end.setHours(23, 59, 59, 999);
         where.entryDate.lte = end;
@@ -425,11 +460,12 @@ export class CustomersService {
       ];
     }
 
-    // Run ledger entries + summary totals in parallel
     const [entries, totals] = await Promise.all([
       this.prisma.customerLedger.findMany({
         where,
         orderBy: { entryDate: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
       }),
 
       this.prisma.customerLedger.aggregate({
@@ -449,18 +485,23 @@ export class CustomersService {
     const totalCredit = totals._sum.creditAmount ?? 0;
 
     return {
-      // The 4 summary cards at the top of Ledger tab:
       summary: {
         totalDebit,
         totalCredit,
         outstanding: totalDebit - totalCredit,
         totalEntries: totals._count,
-        // GST totals (for "With GST" toggle)
         totalCgst: totals._sum.cgst ?? 0,
         totalSgst: totals._sum.sgst ?? 0,
         totalIgst: totals._sum.igst ?? 0,
       },
       data: entries,
+
+      pagination: {
+        page,
+        limit,
+        total: totals._count,
+        totalPages: Math.ceil(totals._count / limit),
+      },
     };
   }
 
@@ -472,51 +513,49 @@ export class CustomersService {
   ) {
     await this.findOne(customerId, companyId);
 
-    // Validate: must have either debit OR credit, not both zero
     if (!dto.debitAmount && !dto.creditAmount) {
       throw new BadRequestException(
         'Either debitAmount or creditAmount must be provided',
       );
     }
 
-    // Get the current running balance to calculate the new balance
-    const lastEntry = await this.prisma.customerLedger.findFirst({
-      where: { customerId, companyId },
-      orderBy: { entryDate: 'desc' },
-      select: { balance: true },
-    });
-
-    const previousBalance = lastEntry?.balance ?? 0;
     const debit = dto.debitAmount ?? 0;
     const credit = dto.creditAmount ?? 0;
-    const newBalance = previousBalance + debit - credit;
-    // Balance formula: previous + debit(money owed) - credit(money received)
 
-    // Create ledger entry
-    const entry = await this.prisma.customerLedger.create({
-      data: {
-        customerId,
-        companyId,
-        entryType: dto.entryType,
-        referenceNo: dto.referenceNo,
-        description: dto.description,
-        debitAmount: debit,
-        creditAmount: credit,
-        cgst: dto.cgst ?? 0,
-        sgst: dto.sgst ?? 0,
-        igst: dto.igst ?? 0,
-        balance: newBalance,
-        entryDate: new Date(dto.entryDate),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const lastEntry = await tx.customerLedger.findFirst({
+        where: { customerId, companyId },
+        orderBy: { entryDate: 'desc' },
+        select: { balance: true },
+      });
+
+      const previousBalance = lastEntry?.balance ?? 0;
+      const newBalance = previousBalance + debit - credit;
+
+      const entry = await tx.customerLedger.create({
+        data: {
+          customerId,
+          companyId,
+          entryType: dto.entryType,
+          referenceNo: dto.referenceNo,
+          description: dto.description,
+          debitAmount: debit,
+          creditAmount: credit,
+          cgst: dto.cgst ?? 0,
+          sgst: dto.sgst ?? 0,
+          igst: dto.igst ?? 0,
+          balance: newBalance,
+          entryDate: new Date(dto.entryDate),
+        },
+      });
+
+      await tx.customer.update({
+        where: { id: customerId },
+        data: { outstandingBalance: newBalance > 0 ? newBalance : 0 },
+      });
+
+      return entry;
     });
-
-    // Keep customer's outstandingBalance in sync
-    await this.prisma.customer.update({
-      where: { id: customerId },
-      data: { outstandingBalance: newBalance > 0 ? newBalance : 0 },
-    });
-
-    return entry;
   }
 
   // EXPORT LEDGER — GET /customers/:id/ledger/export
@@ -528,7 +567,6 @@ export class CustomersService {
     await this.findOne(customerId, companyId);
 
     const { entryType } = query;
-    // Same normalization as getLedger — accept both naming conventions
     const fromDate = query.fromDate ?? query.startDate;
     const toDate = query.toDate ?? query.endDate;
 

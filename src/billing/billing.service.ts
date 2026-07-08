@@ -13,6 +13,7 @@ import {
   PaymentFilterDto,
   OutstandingFilterDto,
   DailySummaryFilterDto,
+  UpdateInvoiceDto,
 } from './dto/billing.dto';
 import { Invoice, InvoiceStatus, InvoiceType, Prisma } from '@prisma/client';
 import { NotificationService } from 'src/notifications/notification.service';
@@ -51,12 +52,15 @@ export class BillingService {
   ) {}
 
   // ─── HELPER: Generate Invoice Number ─────────────────────────────────────
-  private async generateInvoiceNumber(companyId: string): Promise<string> {
+  private async generateInvoiceNumber(
+    client: Prisma.TransactionClient | PrismaService,
+    companyId: string,
+  ): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
     const prefix = `INV-${dateStr}-`;
 
-    const last = await this.prisma.invoice.findFirst({
+    const last = await client.invoice.findFirst({
       where: { companyId, invoiceNumber: { startsWith: prefix } },
       orderBy: { invoiceNumber: 'desc' },
       select: { invoiceNumber: true },
@@ -72,12 +76,15 @@ export class BillingService {
   }
 
   // ─── HELPER: Generate Payment Number ─────────────────────────────────────
-  private async generatePaymentNumber(companyId: string): Promise<string> {
+  private async generatePaymentNumber(
+    client: Prisma.TransactionClient | PrismaService,
+    companyId: string,
+  ): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
     const prefix = `PAY-${dateStr}-`;
 
-    const last = await this.prisma.payment.findFirst({
+    const last = await client.payment.findFirst({
       where: { companyId, paymentNumber: { startsWith: prefix } },
       orderBy: { paymentNumber: 'desc' },
       select: { paymentNumber: true },
@@ -105,21 +112,35 @@ export class BillingService {
     if (!product) return;
 
     if (product.stock === 0) {
-      void this.notifications.notifyOutOfStock({
-        companyName: product.company.name,
-        productName: product.name,
-        sku: product.sku,
-        unit: product.unit,
-      });
+      void this.notifications
+        .notifyOutOfStock({
+          companyName: product.company.name,
+          productName: product.name,
+          sku: product.sku,
+          unit: product.unit,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to send out-of-stock notification for ${product.sku}`,
+            err,
+          );
+        });
     } else if (product.minStock > 0 && product.stock <= product.minStock) {
-      void this.notifications.notifyLowStock({
-        companyName: product.company.name,
-        productName: product.name,
-        sku: product.sku,
-        stock: product.stock,
-        minStock: product.minStock,
-        unit: product.unit,
-      });
+      void this.notifications
+        .notifyLowStock({
+          companyName: product.company.name,
+          productName: product.name,
+          sku: product.sku,
+          stock: product.stock,
+          minStock: product.minStock,
+          unit: product.unit,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to send low-stock notification for ${product.sku}`,
+            err,
+          );
+        });
     }
   }
 
@@ -209,6 +230,7 @@ export class BillingService {
     dto: CreateInvoiceDto,
     companyId: string,
     userId: string,
+    externalTx?: Prisma.TransactionClient,
   ) {
     if (dto.invoiceType === InvoiceType.WALK_IN && !dto.walkInName) {
       throw new BadRequestException('Walk-in customer name is required');
@@ -243,9 +265,18 @@ export class BillingService {
     const { processedItems, subtotal, cgst, sgst, igst, totalAmount } =
       this.calculateTotals(dto.items, dto.gstEnabled ?? false, gstRate);
 
-    const invoiceNumber = await this.generateInvoiceNumber(companyId);
+    const runInTx = async (tx: Prisma.TransactionClient) => {
+      const invoiceNumber = await this.generateInvoiceNumber(tx, companyId);
 
-    const invoice = await this.prisma.$transaction(async (tx) => {
+      for (const item of processedItems) {
+        const product = productMap.get(item.productId)!;
+        if (product.stock < item.quantity) {
+          throw new BadRequestException(
+            `Insufficient stock for "${product.name}". Available: ${product.stock}, requested: ${item.quantity}`,
+          );
+        }
+      }
+
       const newInvoice = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -336,7 +367,12 @@ export class BillingService {
       }
 
       return newInvoice;
-    });
+    };
+
+    const invoice = externalTx
+      ? await runInTx(externalTx)
+      : await this.prisma.$transaction(runInTx);
+
     for (const item of processedItems) {
       void this.checkAndNotifyStock(item.productId, companyId);
     }
@@ -473,6 +509,22 @@ export class BillingService {
     };
   }
 
+  async updateInvoice(id: string, dto: UpdateInvoiceDto, companyId: string) {
+    const invoice = await this.findInvoiceById(id, companyId);
+
+    if (invoice.status === InvoiceStatus.CANCELLED) {
+      throw new BadRequestException('Cannot update a cancelled invoice');
+    }
+
+    return this.prisma.invoice.update({
+      where: { id },
+      data: {
+        notes: dto.notes ?? invoice.notes,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : invoice.dueDate,
+      },
+    });
+  }
+
   //  GET SINGLE INVOICE
 
   async findInvoiceById(id: string, companyId: string) {
@@ -526,6 +578,11 @@ export class BillingService {
           data: { outstandingBalance: { decrement: invoice.balanceDue } },
         });
 
+        const updatedForLedger = await tx.customer.findUnique({
+          where: { id: invoice.customerId },
+          select: { outstandingBalance: true },
+        });
+
         await tx.customerLedger.create({
           data: {
             customerId: invoice.customerId,
@@ -535,7 +592,7 @@ export class BillingService {
             description: `Cancellation of ${invoice.invoiceNumber}`,
             debitAmount: 0,
             creditAmount: invoice.balanceDue,
-            balance: 0,
+            balance: updatedForLedger!.outstandingBalance,
             entryDate: new Date(),
           },
         });
@@ -589,9 +646,11 @@ export class BillingService {
       }
     }
 
-    const paymentNumber = await this.generatePaymentNumber(companyId);
+    let paymentNumber: string;
 
     await this.prisma.$transaction(async (tx) => {
+      paymentNumber = await this.generatePaymentNumber(tx, companyId);
+
       await tx.payment.create({
         data: {
           paymentNumber,
@@ -651,7 +710,10 @@ export class BillingService {
       });
     });
 
-    return { message: 'Payment recorded successfully', paymentNumber };
+    return {
+      message: 'Payment recorded successfully',
+      paymentNumber: paymentNumber!,
+    };
   }
 
   // LIST PAYMENTS
@@ -1027,6 +1089,7 @@ export class BillingService {
       category: {
         name: 'Finished Goods',
       },
+      isSellable: true,
     };
 
     if (search) {

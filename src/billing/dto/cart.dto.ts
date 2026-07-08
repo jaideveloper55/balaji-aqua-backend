@@ -6,6 +6,7 @@ import {
   IsEnum,
   IsInt,
   IsArray,
+  IsDateString,
   ValidateNested,
   Min,
 } from 'class-validator';
@@ -101,7 +102,7 @@ export class UpdateCartSettingsDto {
   notes?: string;
 }
 
-//  SPLIT PAYMENT ENTRY (one real-money mode + amount)
+//  SPLIT PAYMENT ENTRY
 export class PaymentSplitDto {
   @ApiProperty({ enum: PaymentMode, example: 'CASH' })
   @IsEnum(PaymentMode)
@@ -118,16 +119,17 @@ export class PaymentSplitDto {
   referenceId?: string;
 }
 
-//  CHECKOUT (Convert cart → invoice)
+//  CHECKOUT
 export class CheckoutCartDto {
   @ApiPropertyOptional({
+    enum: PaymentMode,
     description:
-      'Payment mode if paying immediately (single-payment fast path)',
-    example: 'CASH',
+      'Payment mode if paying immediately (single-payment fast path). Use CREDIT for a credit sale.',
+    example: PaymentMode.CASH,
   })
   @IsOptional()
-  @IsString()
-  paymentMode?: string;
+  @IsEnum(PaymentMode)
+  paymentMode?: PaymentMode;
 
   @ApiPropertyOptional({ description: 'Reference ID for payment' })
   @IsOptional()
@@ -136,9 +138,10 @@ export class CheckoutCartDto {
 
   @ApiPropertyOptional({
     description: 'Due date for credit / remaining balance',
+    example: '2026-08-15',
   })
   @IsOptional()
-  @IsString()
+  @IsDateString()
   dueDate?: string;
 
   @ApiPropertyOptional({

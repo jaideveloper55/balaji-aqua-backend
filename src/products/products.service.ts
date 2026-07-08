@@ -22,7 +22,6 @@ export class ProductsService {
 
   // ─── CREATE ───
   async create(companyId: string, dto: CreateProductDto) {
-    // Verify category belongs to this company
     const category = await this.prisma.category.findFirst({
       where: { id: dto.categoryId, companyId },
     });
@@ -30,7 +29,6 @@ export class ProductsService {
       throw new BadRequestException('Category not found in this company');
     }
 
-    // Auto-derive status from stock
     const status = this.deriveStatus(dto.stock ?? 0, dto.status);
 
     try {
@@ -65,7 +63,7 @@ export class ProductsService {
     }
   }
 
-  // ─── LIST with filters + pagination ───
+  // ─── LIST
   async findAll(companyId: string, query: QueryProductDto) {
     const {
       search,
@@ -126,7 +124,7 @@ export class ProductsService {
     };
   }
 
-  // ─── STATS — for the 4 dashboard cards ───
+  // ─── STATS —
   async getStats(companyId: string) {
     const [total, active, outOfStock, lowStock] = await Promise.all([
       this.prisma.product.count({ where: { companyId } }),
@@ -136,7 +134,7 @@ export class ProductsService {
       this.prisma.product.count({
         where: { companyId, stock: 0 },
       }),
-      // low stock = stock > 0 AND stock <= minStock AND minStock > 0
+
       this.prisma.$queryRaw<Array<{ count: bigint }>>`
           SELECT COUNT(*)::bigint as count
           FROM products
@@ -150,39 +148,47 @@ export class ProductsService {
     return { total, active, outOfStock, lowStock };
   }
 
-  // ─── ALERTS — derived directly from products ───
+  // ─── ALERTS
+
   async getAlerts(companyId: string) {
-    const products = await this.prisma.product.findMany({
-      where: {
-        companyId,
-        OR: [
-          { stock: 0 },
-          { AND: [{ stock: { gt: 0 } }, { minStock: { gt: 0 } }] },
-        ],
-      },
-      include: { category: true },
+    const products = await this.prisma.$queryRaw<
+      {
+        id: string;
+        name: string;
+        sku: string;
+        stock: number;
+        minStock: number;
+        unit: string;
+      }[]
+    >`
+      SELECT id, name, sku, stock, "minStock", unit
+      FROM products
+      WHERE "companyId" = ${companyId}
+        AND (
+          stock = 0
+          OR (stock > 0 AND "minStock" > 0 AND stock <= "minStock")
+        )
+      ORDER BY stock ASC
+    `;
+
+    const alerts = products.map((p) => {
+      const isOut = p.stock === 0;
+
+      return {
+        id: `${p.id}-${isOut ? 'out' : 'low'}`,
+        productId: p.id,
+        productName: p.name,
+        sku: p.sku,
+        severity: isOut ? 'critical' : 'warning',
+        stock: p.stock,
+        minStock: p.minStock,
+        unit: p.unit,
+        message: isOut
+          ? `${p.name} is out of stock. Reorder immediately.`
+          : `${p.name} stock (${p.stock}) is below minimum (${p.minStock}).`,
+      };
     });
 
-    const alerts = products
-      .filter((p) => p.stock === 0 || p.stock <= p.minStock)
-      .map((p) => {
-        const isOut = p.stock === 0;
-        return {
-          id: `${p.id}-${isOut ? 'out' : 'low'}`,
-          productId: p.id,
-          productName: p.name,
-          sku: p.sku,
-          severity: isOut ? 'critical' : 'warning',
-          stock: p.stock,
-          minStock: p.minStock,
-          unit: p.unit,
-          message: isOut
-            ? `${p.name} is out of stock. Reorder immediately.`
-            : `${p.name} stock (${p.stock}) is below minimum (${p.minStock}).`,
-        };
-      });
-
-    // critical first
     alerts.sort((a, b) =>
       a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1,
     );
@@ -190,7 +196,7 @@ export class ProductsService {
     return alerts;
   }
 
-  // ─── GET ONE ───
+  // ─── GET ONE
   async findOne(companyId: string, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, companyId },
@@ -205,6 +211,7 @@ export class ProductsService {
   }
 
   // ─── UPDATE ───
+
   async update(companyId: string, id: string, dto: UpdateProductDto) {
     const existing = await this.findOne(companyId, id);
 
@@ -217,7 +224,6 @@ export class ProductsService {
       }
     }
 
-    // Re-derive status if stock is being updated
     const newStock = dto.stock ?? existing.stock;
     const status = this.deriveStatus(newStock, dto.status ?? existing.status);
 
@@ -243,21 +249,35 @@ export class ProductsService {
 
       if (stockChanged || minStockChanged) {
         if (updated.stock === 0) {
-          void this.notifications.notifyOutOfStock({
-            companyName: updated.company.name,
-            productName: updated.name,
-            sku: updated.sku,
-            unit: updated.unit,
-          });
+          void this.notifications
+            .notifyOutOfStock({
+              companyName: updated.company.name,
+              productName: updated.name,
+              sku: updated.sku,
+              unit: updated.unit,
+            })
+            .catch((err) => {
+              this.logger.error(
+                `Failed to send out-of-stock notification for ${updated.sku}`,
+                err,
+              );
+            });
         } else if (updated.minStock > 0 && updated.stock <= updated.minStock) {
-          void this.notifications.notifyLowStock({
-            companyName: updated.company.name,
-            productName: updated.name,
-            sku: updated.sku,
-            stock: updated.stock,
-            minStock: updated.minStock,
-            unit: updated.unit,
-          });
+          void this.notifications
+            .notifyLowStock({
+              companyName: updated.company.name,
+              productName: updated.name,
+              sku: updated.sku,
+              stock: updated.stock,
+              minStock: updated.minStock,
+              unit: updated.unit,
+            })
+            .catch((err) => {
+              this.logger.error(
+                `Failed to send low-stock notification for ${updated.sku}`,
+                err,
+              );
+            });
         }
       }
 
@@ -276,12 +296,27 @@ export class ProductsService {
   }
 
   // ─── DELETE ───
+
   async remove(companyId: string, id: string) {
-    await this.findOne(companyId, id);
+    const product = await this.findOne(companyId, id);
+
+    const [invoiceItemCount, stockMovementCount] = await Promise.all([
+      this.prisma.invoiceItem.count({ where: { productId: id, companyId } }),
+      this.prisma.stockMovement.count({
+        where: { productId: id, companyId },
+      }),
+    ]);
+
+    if (invoiceItemCount > 0 || stockMovementCount > 0) {
+      throw new ConflictException(
+        `Cannot delete "${product.name}" — it has ${invoiceItemCount} ` +
+          `invoice record(s) and ${stockMovementCount} stock movement(s). ` +
+          `Set status to INACTIVE instead to hide it from active lists ` +
+          `while preserving billing and audit history.`,
+      );
+    }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.stockMovement.deleteMany({ where: { productId: id } });
-      await tx.invoiceItem.deleteMany({ where: { productId: id } });
       await tx.cartItem.deleteMany({ where: { productId: id } });
       await tx.product.delete({ where: { id } });
     });
@@ -294,7 +329,6 @@ export class ProductsService {
   async removeMany(companyId: string, ids: string[]) {
     if (!ids?.length) throw new BadRequestException('No product IDs provided');
 
-    // verify all belong to this company (tenant safety)
     const owned = await this.prisma.product.findMany({
       where: { id: { in: ids }, companyId },
       select: { id: true },
@@ -304,27 +338,53 @@ export class ProductsService {
       throw new BadRequestException('No matching products found');
     }
 
-    // Delete children then parents, atomically
+    // Find which of these products have protected history.
+    const [withInvoices, withMovements] = await Promise.all([
+      this.prisma.invoiceItem.findMany({
+        where: { productId: { in: ownedIds } },
+        select: { productId: true },
+        distinct: ['productId'],
+      }),
+      this.prisma.stockMovement.findMany({
+        where: { productId: { in: ownedIds } },
+        select: { productId: true },
+        distinct: ['productId'],
+      }),
+    ]);
+
+    const protectedIds = new Set([
+      ...withInvoices.map((i) => i.productId),
+      ...withMovements.map((m) => m.productId),
+    ]);
+
+    const deletableIds = ownedIds.filter((pid) => !protectedIds.has(pid));
+
+    if (deletableIds.length === 0) {
+      throw new ConflictException(
+        'None of the selected products can be deleted — all of them have ' +
+          'invoice or stock history. Set them to INACTIVE instead.',
+      );
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
-      await tx.stockMovement.deleteMany({
-        where: { productId: { in: ownedIds } },
+      await tx.cartItem.deleteMany({
+        where: { productId: { in: deletableIds } },
       });
-      await tx.invoiceItem.deleteMany({
-        where: { productId: { in: ownedIds } },
-      });
-      await tx.cartItem.deleteMany({ where: { productId: { in: ownedIds } } });
-      return tx.product.deleteMany({ where: { id: { in: ownedIds } } });
+      return tx.product.deleteMany({ where: { id: { in: deletableIds } } });
     });
 
     return {
       message: `${result.count} product(s) permanently deleted`,
       count: result.count,
+      skipped: ownedIds.length - deletableIds.length,
+      skippedReason:
+        protectedIds.size > 0
+          ? 'Some products were skipped because they have invoice or stock history'
+          : undefined,
     };
   }
 
   // ─── HELPERS ───
-
-  /** Auto-derive status from stock unless explicitly INACTIVE */
   private deriveStatus(stock: number, current?: ProductStatus): ProductStatus {
     if (current === ProductStatus.INACTIVE) return ProductStatus.INACTIVE;
     if (stock === 0) return ProductStatus.OUT_OF_STOCK;

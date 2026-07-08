@@ -149,9 +149,7 @@ export class BillingController {
     @Body() dto: UpdateInvoiceDto,
     @CurrentCompany() companyId: string,
   ) {
-    // TODO: implement actual update in BillingService.updateInvoice(id, dto, companyId)
-    const invoice = await this.billingService.findInvoiceById(id, companyId);
-    return invoice;
+    return this.billingService.updateInvoice(id, dto, companyId);
   }
 
   @Patch('invoices/:id/cancel')

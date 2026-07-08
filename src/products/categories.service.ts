@@ -123,7 +123,20 @@ export class CategoriesService {
       );
     }
 
-    await this.prisma.category.delete({ where: { id } });
+    try {
+      await this.prisma.category.delete({ where: { id } });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2003'
+      ) {
+        throw new BadRequestException(
+          'Cannot delete category — a product was just linked to it. Please try again.',
+        );
+      }
+      throw err;
+    }
+
     return { message: 'Category deleted successfully' };
   }
 }

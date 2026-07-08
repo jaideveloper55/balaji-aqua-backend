@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsIn } from 'class-validator';
+import { IsOptional, IsIn, IsDateString } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class ExportFilterDto {
@@ -7,7 +7,7 @@ export class ExportFilterDto {
     example: '2026-05-01',
   })
   @IsOptional()
-  @IsString()
+  @IsDateString()
   dateFrom?: string;
 
   @ApiPropertyOptional({
@@ -15,7 +15,7 @@ export class ExportFilterDto {
     example: '2026-05-31',
   })
   @IsOptional()
-  @IsString()
+  @IsDateString()
   dateTo?: string;
 
   @ApiPropertyOptional({

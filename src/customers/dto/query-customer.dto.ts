@@ -1,38 +1,20 @@
-import { ApiPropertyOptional, OmitType } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
-  IsNumber,
+  IsInt,
   IsOptional,
   IsPositive,
   IsString,
   Max,
   Min,
 } from 'class-validator';
-import { PartialType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  CreateCustomerDto,
-  CustomerStatus,
-  CustomerType,
-} from './create-customer.dto';
-
-export class UpdateCustomerDto extends PartialType(
-  OmitType(CreateCustomerDto, ['outstandingBalance'] as const),
-) {
-  @ApiPropertyOptional({
-    description: 'Update customer status (only ADMIN can do this)',
-    enum: CustomerStatus,
-    example: CustomerStatus.ACTIVE,
-  })
-  @IsOptional()
-  @IsEnum(CustomerStatus)
-  status?: CustomerStatus;
-}
+import { CustomerStatus, CustomerType } from './create-customer.dto';
 
 export class QueryCustomerDto {
   @ApiPropertyOptional({
-    description: 'Filter by customer status (kept for backward compatibility)',
+    description: 'Filter by customer status',
     enum: CustomerStatus,
   })
   @IsOptional()
@@ -48,7 +30,7 @@ export class QueryCustomerDto {
   type?: CustomerType;
 
   @ApiPropertyOptional({
-    description: 'Search by name, phone, email, or customer code',
+    description: 'Search by name, phone, email, or code',
     example: 'Rajesh',
   })
   @IsOptional()
@@ -56,7 +38,7 @@ export class QueryCustomerDto {
   search?: string;
 
   @ApiPropertyOptional({
-    description: 'Filter customers joined on or after this date (YYYY-MM-DD)',
+    description: 'Joined on/after this date',
     example: '2026-01-01',
   })
   @IsOptional()
@@ -64,32 +46,28 @@ export class QueryCustomerDto {
   fromDate?: string;
 
   @ApiPropertyOptional({
-    description: 'Filter customers joined on or before this date (YYYY-MM-DD)',
+    description: 'Joined on/before this date',
     example: '2026-12-31',
   })
   @IsOptional()
   @IsDateString()
   toDate?: string;
 
-  @ApiPropertyOptional({
-    description: 'Page number for pagination',
-    example: 1,
-    default: 1,
-  })
+  @ApiPropertyOptional({ description: 'Page number', example: 1, default: 1 })
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @IsPositive()
   page?: number = 1;
 
   @ApiPropertyOptional({
-    description: 'Number of results per page',
+    description: 'Results per page',
     example: 10,
     default: 10,
   })
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(1)
   @Max(100)
   limit?: number = 10;
