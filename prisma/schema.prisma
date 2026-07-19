@@ -736,6 +736,10 @@ model RecurringExpense {
   nextDue       DateTime
   isPaused      Boolean  @default(false)
 
+  reminderDays      Int       @default(5)
+
+  reminderAckedFor  DateTime?
+
   // Auto-generated expenses reference this
   generated     Expense[]
 

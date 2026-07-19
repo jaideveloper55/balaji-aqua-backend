@@ -18,6 +18,10 @@ import { CompanyScopeGuard } from './common/guards/company-scope.guard';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { CategoriesModule } from './expense-categories/categories.module';
+import { ExpensesModule } from './expenses/expenses.module';
+import { VendorsModule } from './vendors/Vendors.module';
+import { RecurringModule } from './recurring-expenses/Recurring.module';
+import { PettyCashModule } from './petty-cash/petty-cash.module';
 
 @Module({
   imports: [
@@ -41,8 +45,12 @@ import { CategoriesModule } from './expense-categories/categories.module';
     CustomersModule,
     ProductsModule,
     InventoryModule,
-    CategoriesModule,
     BillingModule,
+    ExpensesModule,
+    CategoriesModule,
+    VendorsModule,
+    RecurringModule,
+    PettyCashModule,
     NotificationsModule,
   ],
   controllers: [AppController],
