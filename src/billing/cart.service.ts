@@ -305,10 +305,15 @@ export class CartService {
     const cart = await this.getOrCreateCart(userId, companyId);
 
     const customerIdProvided = dto.customerId !== undefined;
-    const newCustomerId = customerIdProvided ? dto.customerId : cart.customerId;
+    let newCustomerId = customerIdProvided ? dto.customerId : cart.customerId;
 
-    const repriceItems =
-      customerIdProvided && newCustomerId !== cart.customerId;
+    const newInvoiceType = dto.invoiceType ?? cart.invoiceType;
+
+    if (newInvoiceType === InvoiceType.WALK_IN) {
+      newCustomerId = null;
+    }
+
+    const repriceItems = newCustomerId !== cart.customerId;
 
     const gstEnabled = dto.gstEnabled ?? cart.gstEnabled;
     const gstRate = dto.gstRate ?? cart.gstRate;
@@ -338,7 +343,7 @@ export class CartService {
           customerId: newCustomerId,
           walkInName: dto.walkInName ?? cart.walkInName,
           walkInPhone: dto.walkInPhone ?? cart.walkInPhone,
-          invoiceType: dto.invoiceType ?? cart.invoiceType,
+          invoiceType: newInvoiceType,
           gstEnabled,
           gstRate,
           discount,
