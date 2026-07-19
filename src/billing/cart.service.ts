@@ -111,10 +111,64 @@ export class CartService {
   }
 
   // GET CART
+
   async getCart(userId: string, companyId: string) {
     const cart = await this.getOrCreateCart(userId, companyId);
-    const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-    return { ...cart, itemCount };
+
+    const reconciledCart = await this.reconcilePrices(cart, companyId);
+
+    const itemCount = reconciledCart.items.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+
+    return { ...reconciledCart, itemCount };
+  }
+
+  private async reconcilePrices(cart: any, companyId: string) {
+    let changed = false;
+    const updatedItems: any[] = [];
+
+    for (const item of cart.items) {
+      const correctPrice = cart.customerId
+        ? await this.billingService.getCustomerPrice(
+            cart.customerId,
+            item.productId,
+            companyId,
+          )
+        : item.product.basePrice;
+
+      if (Math.abs(correctPrice - item.unitPrice) > 0.001) {
+        changed = true;
+        const newLineTotal = item.quantity * correctPrice;
+
+        await this.prisma.cartItem.update({
+          where: { id: item.id },
+          data: { unitPrice: correctPrice, lineTotal: newLineTotal },
+        });
+
+        updatedItems.push({
+          ...item,
+          unitPrice: correctPrice,
+          lineTotal: newLineTotal,
+        });
+      } else {
+        updatedItems.push(item);
+      }
+    }
+
+    if (!changed) return cart;
+
+    const totals = this.calculateCartTotals(
+      updatedItems,
+      cart.gstEnabled,
+      cart.gstRate,
+      cart.discount,
+    );
+
+    await this.prisma.cart.update({ where: { id: cart.id }, data: totals });
+
+    return { ...cart, ...totals, items: updatedItems };
   }
 
   // ADD ITEM TO CART
@@ -250,23 +304,27 @@ export class CartService {
   ) {
     const cart = await this.getOrCreateCart(userId, companyId);
 
-    let repriceItems = false;
-    if (dto.customerId && dto.customerId !== cart.customerId) {
-      repriceItems = true;
-    }
+    const customerIdProvided = dto.customerId !== undefined;
+    const newCustomerId = customerIdProvided ? dto.customerId : cart.customerId;
+
+    const repriceItems =
+      customerIdProvided && newCustomerId !== cart.customerId;
 
     const gstEnabled = dto.gstEnabled ?? cart.gstEnabled;
     const gstRate = dto.gstRate ?? cart.gstRate;
     const discount = dto.discount ?? cart.discount;
 
     await this.prisma.$transaction(async (tx) => {
-      if (repriceItems && dto.customerId) {
+      if (repriceItems) {
         for (const item of cart.items) {
-          const newPrice = await this.billingService.getCustomerPrice(
-            dto.customerId,
-            item.productId,
-            companyId,
-          );
+          const newPrice = newCustomerId
+            ? await this.billingService.getCustomerPrice(
+                newCustomerId,
+                item.productId,
+                companyId,
+              )
+            : item.product.basePrice;
+
           await tx.cartItem.update({
             where: { id: item.id },
             data: { unitPrice: newPrice, lineTotal: item.quantity * newPrice },
@@ -277,7 +335,7 @@ export class CartService {
       await tx.cart.update({
         where: { id: cart.id },
         data: {
-          customerId: dto.customerId ?? cart.customerId,
+          customerId: newCustomerId,
           walkInName: dto.walkInName ?? cart.walkInName,
           walkInPhone: dto.walkInPhone ?? cart.walkInPhone,
           invoiceType: dto.invoiceType ?? cart.invoiceType,

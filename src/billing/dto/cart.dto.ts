@@ -9,6 +9,7 @@ import {
   IsDateString,
   ValidateNested,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -52,11 +53,14 @@ export class UpdateCartItemDto {
 //  UPDATE CART SETTINGS
 export class UpdateCartSettingsDto {
   @ApiPropertyOptional({
-    description: 'Selected customer ID (null for walk-in)',
+    description:
+      'Selected customer ID. Pass null explicitly to switch the cart to Walk-in.',
+    nullable: true,
   })
   @IsOptional()
+  @ValidateIf((o) => o.customerId !== null)
   @IsString()
-  customerId?: string;
+  customerId?: string | null;
 
   @ApiPropertyOptional({ description: 'Walk-in customer name' })
   @IsOptional()
