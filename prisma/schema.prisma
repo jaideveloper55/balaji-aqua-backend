@@ -110,6 +110,12 @@ model Company {
   payments       Payment[]
   carts          Cart[]
   stockMovements StockMovement[]
+  expenseCategories     ExpenseCategory[]
+  vendors               Vendor[]
+  expenses              Expense[]
+  recurringExpenses     RecurringExpense[]
+  pettyCashTransactions PettyCashTransaction[]
+  pettyCashBox          PettyCashBox?
 
   @@map("companies")
 }
@@ -576,4 +582,213 @@ model StockMovement {
   @@index([productId])
   @@index([companyId, type])
   @@map("stock_movements")
+}
+
+
+
+
+// EXPENSE MODULE
+
+enum ExpenseStatus {
+  PAID
+  APPROVED
+  PENDING
+  REJECTED
+}
+
+enum RecurringFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum PettyCashDirection {
+  IN    
+  OUT 
+}
+
+enum RolloverRule {
+  NONE     
+  CARRY    
+  DEDUCT   
+}
+
+//  Expense Category
+model ExpenseCategory {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name         String
+  description  String?
+  color        String   @default("#64748b")   
+  bg           String   @default("#f1f5f9") 
+  icon         String   @default("folder")   
+
+  // Budget config
+  monthlyBudget   Decimal   @default(0) @db.Decimal(12, 2)
+  alertThreshold  Int       @default(90)       
+  rolloverRule    RolloverRule @default(NONE)
+
+  isActive     Boolean  @default(true)
+  isSystem     Boolean  @default(false)        
+
+  expenses     Expense[]
+  recurring    RecurringExpense[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId])
+  @@map("expense_categories")
+}
+
+
+//  Vendor / Supplier
+
+model Vendor {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name          String
+  category      String                
+  phone         String
+  email         String?
+  gstin         String?
+  notes         String?
+
+  openingOutstanding Decimal @default(0) @db.Decimal(12, 2)
+  isActive      Boolean  @default(true)
+
+  expenses      Expense[]
+  recurring     RecurringExpense[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId])
+  @@map("vendors")
+}
+
+//  Expense
+
+model Expense {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  expenseNo     String                 
+
+  vendorName    String                   
+  vendorId      String?
+  vendor        Vendor?  @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  description   String
+  categoryId    String?
+  category      ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryName  String                  
+
+  amount        Decimal  @db.Decimal(12, 2)
+  gstAmount     Decimal  @default(0) @db.Decimal(12, 2)
+
+  paymentMode   PaymentMode
+  status        ExpenseStatus @default(PENDING)
+  date          DateTime
+  notes         String?
+
+
+  recurringId   String?
+  recurring     RecurringExpense? @relation(fields: [recurringId], references: [id], onDelete: SetNull)
+
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, expenseNo])
+  @@index([companyId, date])
+  @@index([companyId, status])
+  @@index([companyId, categoryId])
+  @@map("expenses")
+}
+
+
+// Recurring Expense Schedule
+
+model RecurringExpense {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  name          String
+  vendorName    String
+  vendorId      String?
+  vendor        Vendor?  @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  categoryId    String?
+  category      ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryName  String
+
+  frequency     RecurringFrequency
+  amount        Decimal  @db.Decimal(12, 2)
+  nextDue       DateTime
+  isPaused      Boolean  @default(false)
+
+  // Auto-generated expenses reference this
+  generated     Expense[]
+
+  lastGeneratedAt DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([companyId, nextDue])
+  @@map("recurring_expenses")
+}
+
+
+//s Petty Cash
+
+model PettyCashTransaction {
+  id            String   @id @default(uuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  txnNo         String                  
+  direction     PettyCashDirection        
+  amount        Decimal  @db.Decimal(12, 2)
+  description   String                   
+
+  handledById   String?                   
+  handledByName String?                   
+
+  balanceAfter  Decimal  @db.Decimal(12, 2) 
+  txnDate       DateTime @default(now())
+
+  isReconciled  Boolean  @default(false)
+
+  createdAt     DateTime @default(now())
+
+  @@unique([companyId, txnNo])
+  @@index([companyId, txnDate])
+  @@map("petty_cash_transactions")
+}
+
+// Petty Cash Balance
+
+model PettyCashBox {
+  id             String   @id @default(uuid())
+  companyId      String   @unique
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  currentBalance Decimal  @default(0) @db.Decimal(12, 2)
+  openingBalance Decimal  @default(0) @db.Decimal(12, 2)
+  reconciledTill DateTime?
+
+  updatedAt      DateTime @updatedAt
+
+  @@map("petty_cash_boxes")
 }

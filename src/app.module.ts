@@ -17,6 +17,7 @@ import { InventoryModule } from './inventory/Inventory.module';
 import { CompanyScopeGuard } from './common/guards/company-scope.guard';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { CategoriesModule } from './expense-categories/categories.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CustomersModule,
     ProductsModule,
     InventoryModule,
+    CategoriesModule,
     BillingModule,
     NotificationsModule,
   ],

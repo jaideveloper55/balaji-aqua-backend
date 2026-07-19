@@ -131,14 +131,17 @@ export class CartService {
     }
 
     const cart = await this.getOrCreateCart(userId, companyId);
-    let effectivePrice = dto.unitPrice ?? product.basePrice;
 
-    if (!dto.unitPrice && cart.customerId) {
+    let effectivePrice: number;
+
+    if (cart.customerId) {
       effectivePrice = await this.billingService.getCustomerPrice(
         cart.customerId,
         dto.productId,
         companyId,
       );
+    } else {
+      effectivePrice = dto.unitPrice ?? product.basePrice;
     }
 
     const existingItem = cart.items.find((i) => i.productId === dto.productId);
@@ -153,7 +156,11 @@ export class CartService {
         }
         await tx.cartItem.update({
           where: { id: existingItem.id },
-          data: { quantity: newQty, lineTotal: newQty * effectivePrice },
+          data: {
+            quantity: newQty,
+            unitPrice: effectivePrice,
+            lineTotal: newQty * effectivePrice,
+          },
         });
       } else {
         await tx.cartItem.create({
