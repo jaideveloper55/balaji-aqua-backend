@@ -463,7 +463,7 @@ export class CustomersService {
     const [entries, totals] = await Promise.all([
       this.prisma.customerLedger.findMany({
         where,
-        orderBy: { entryDate: 'asc' },
+        orderBy: { entryDate: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -584,7 +584,7 @@ export class CustomersService {
 
     const entries = await this.prisma.customerLedger.findMany({
       where,
-      orderBy: { entryDate: 'asc' },
+      orderBy: { entryDate: 'desc' },
     });
 
     return {

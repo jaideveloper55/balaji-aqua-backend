@@ -5,7 +5,12 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma, MovementType, MovementSource } from '@prisma/client';
+import {
+  Prisma,
+  MovementType,
+  MovementSource,
+  ProductStatus,
+} from '@prisma/client';
 import { AdjustStockDto } from './dto/Adjust stock.dto';
 import { StockInDto } from './dto/Stock in.dto';
 import { StockOutDto } from './dto/Stock out.dto';
@@ -33,6 +38,19 @@ export class InventoryService {
     const available = stock - reserved;
     if (available <= minStock) return 'LOW_STOCK';
     return 'IN_STOCK';
+  }
+
+  private deriveProductStatus(
+    newStock: number,
+    currentStatus: ProductStatus,
+  ): ProductStatus {
+    if (
+      currentStatus === ProductStatus.INACTIVE ||
+      currentStatus === ProductStatus.ARCHIVED
+    ) {
+      return currentStatus;
+    }
+    return newStock === 0 ? ProductStatus.OUT_OF_STOCK : ProductStatus.ACTIVE;
   }
 
   private shapeProductRow(p: {
@@ -115,15 +133,80 @@ export class InventoryService {
     }
   }
 
+  // ─── BOM EXPLOSION ───
+
+  private async explodeBom(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    quantityProduced: number,
+    companyId: string,
+  ): Promise<Map<string, number>> {
+    const bomLines = await tx.productBom.findMany({
+      where: {
+        companyId,
+        productId,
+        product: { consumesBom: true },
+      },
+      select: { componentId: true, quantityPerUnit: true },
+    });
+
+    const required = new Map<string, number>();
+    for (const line of bomLines) {
+      const needed = Math.ceil(quantityProduced * line.quantityPerUnit);
+      required.set(
+        line.componentId,
+        (required.get(line.componentId) ?? 0) + needed,
+      );
+    }
+
+    return required;
+  }
+
   //  STOCK IN
   async stockIn(dto: StockInDto, companyId: string, userId: string) {
     const result = await this.prisma.$transaction(async (tx) => {
       const product = await this.lockProduct(tx, dto.productId, companyId);
       const newStock = product.stock + dto.quantity;
 
+      const isProduction = dto.source === MovementSource.PRODUCTION;
+
+      const rawRequired = isProduction
+        ? await this.explodeBom(tx, product.id, dto.quantity, companyId)
+        : new Map<string, number>();
+
+      if (rawRequired.size > 0) {
+        const components = await tx.product.findMany({
+          where: { id: { in: [...rawRequired.keys()] }, companyId },
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            unit: true,
+            stock: true,
+            reserved: true,
+          },
+        });
+
+        for (const comp of components) {
+          const needed = rawRequired.get(comp.id)!;
+          const available = comp.stock - comp.reserved;
+          if (available < needed) {
+            throw new BadRequestException(
+              `Cannot produce ${dto.quantity} ${product.unit} of "${product.name}". ` +
+                `Insufficient raw material "${comp.name}" (${comp.sku}): ` +
+                `need ${needed} ${comp.unit}, only ${available} available.`,
+            );
+          }
+        }
+      }
+
+      // Increase the finished good and re-derive its status
       await tx.product.update({
         where: { id: product.id },
-        data: { stock: newStock },
+        data: {
+          stock: newStock,
+          status: this.deriveProductStatus(newStock, product.status),
+        },
       });
 
       const movement = await tx.stockMovement.create({
@@ -143,11 +226,59 @@ export class InventoryService {
         },
       });
 
-      return { movement, product: { id: product.id, stock: newStock } };
+      // Consume the raw materials this production run used up
+      const consumed: Array<{ id: string; name: string; qty: number }> = [];
+
+      for (const [componentId, qty] of rawRequired) {
+        const before = await tx.product.findUniqueOrThrow({
+          where: { id: componentId },
+          select: { stock: true, status: true },
+        });
+        const componentNewStock = before.stock - qty;
+
+        const updated = await tx.product.update({
+          where: { id: componentId },
+          data: {
+            stock: componentNewStock,
+            status: this.deriveProductStatus(componentNewStock, before.status),
+          },
+          select: { id: true, name: true, sku: true, unit: true, stock: true },
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            productId: updated.id,
+            productName: updated.name,
+            sku: updated.sku,
+            unit: updated.unit,
+            type: MovementType.STOCK_OUT,
+            source: MovementSource.BOM_CONSUMED,
+            quantity: -qty,
+            balanceAfter: updated.stock,
+            referenceId: dto.referenceId,
+            remarks:
+              `Consumed producing ${dto.quantity} ${product.unit} of ` +
+              `${product.name} (${product.sku})`,
+            createdById: userId,
+            companyId,
+          },
+        });
+
+        consumed.push({ id: updated.id, name: updated.name, qty });
+      }
+
+      return {
+        movement,
+        product: { id: product.id, stock: newStock },
+        consumed,
+      };
     });
 
-    // Check AFTER transaction commits stock is now saved in DB
+    // Alerts fire AFTER commit — stock is now durable in the DB
     void this.checkAndNotifyStock(dto.productId, companyId);
+    for (const c of result.consumed) {
+      void this.checkAndNotifyStock(c.id, companyId);
+    }
 
     return result;
   }
@@ -172,6 +303,7 @@ export class InventoryService {
         where: { id: product.id },
         data: {
           stock: newStock,
+          status: this.deriveProductStatus(newStock, product.status),
           ...(isDamage ? { damaged: { increment: dto.quantity } } : {}),
         },
       });
@@ -223,7 +355,10 @@ export class InventoryService {
 
       await tx.product.update({
         where: { id: product.id },
-        data: { stock: dto.countedQuantity },
+        data: {
+          stock: dto.countedQuantity,
+          status: this.deriveProductStatus(dto.countedQuantity, product.status),
+        },
       });
 
       const movement = await tx.stockMovement.create({

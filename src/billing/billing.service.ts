@@ -15,7 +15,15 @@ import {
   DailySummaryFilterDto,
   UpdateInvoiceDto,
 } from './dto/billing.dto';
-import { Invoice, InvoiceStatus, InvoiceType, Prisma } from '@prisma/client';
+import {
+  Invoice,
+  InvoiceStatus,
+  InvoiceType,
+  MovementSource,
+  MovementType,
+  Prisma,
+  ProductStatus,
+} from '@prisma/client';
 import { NotificationService } from 'src/notifications/notification.service';
 
 interface ProcessedItem {
@@ -186,15 +194,11 @@ export class BillingService {
     };
   }
 
-  // ─── HELPER: Resolve date range from filter ──────────────────────────────
-  // Returns [start-of-day, end-of-day] for either a single date or a range.
-  // If neither is provided, defaults to today.
   private resolveDateRange(input: {
     date?: string;
     dateFrom?: string;
     dateTo?: string;
   }): { start: Date; end: Date; isRange: boolean } {
-    // Range takes precedence
     if (input.dateFrom && input.dateTo) {
       const start = new Date(input.dateFrom);
       start.setHours(0, 0, 0, 0);
@@ -359,10 +363,43 @@ export class BillingService {
         });
       }
 
+      // ─── STOCK: finished goods only ───
+
       for (const item of processedItems) {
-        await tx.product.update({
+        const p = productMap.get(item.productId)!;
+        const newStock = p.stock - item.quantity;
+
+        const updated = await tx.product.update({
           where: { id: item.productId },
-          data: { stock: { decrement: item.quantity } },
+          data: {
+            stock: newStock,
+
+            status:
+              p.status === ProductStatus.INACTIVE ||
+              p.status === ProductStatus.ARCHIVED
+                ? p.status
+                : newStock === 0
+                  ? ProductStatus.OUT_OF_STOCK
+                  : ProductStatus.ACTIVE,
+          },
+          select: { id: true, name: true, sku: true, unit: true, stock: true },
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            productId: updated.id,
+            productName: updated.name,
+            sku: updated.sku,
+            unit: updated.unit,
+            type: MovementType.STOCK_OUT,
+            source: MovementSource.SALE,
+            quantity: -item.quantity,
+            balanceAfter: updated.stock,
+            referenceId: invoiceNumber,
+            remarks: `Sold via ${invoiceNumber}`,
+            createdById: userId,
+            companyId,
+          },
         });
       }
 
@@ -373,9 +410,11 @@ export class BillingService {
       ? await runInTx(externalTx)
       : await this.prisma.$transaction(runInTx);
 
+    // Low-stock alerts for finished goods
     for (const item of processedItems) {
       void this.checkAndNotifyStock(item.productId, companyId);
     }
+
     return invoice;
   }
 
@@ -599,10 +638,28 @@ export class BillingService {
       }
 
       const items = await tx.invoiceItem.findMany({ where: { invoiceId: id } });
+
+      // Restore finished goods only. Raw materials stay consumed — cancelling
+      // a sale puts the bottles back on the shelf but doesn't un-make them.
       for (const item of items) {
+        const current = await tx.product.findUniqueOrThrow({
+          where: { id: item.productId },
+          select: { stock: true, status: true },
+        });
+        const restored = current.stock + item.quantity;
+
         await tx.product.update({
           where: { id: item.productId },
-          data: { stock: { increment: item.quantity } },
+          data: {
+            stock: restored,
+            status:
+              current.status === ProductStatus.INACTIVE ||
+              current.status === ProductStatus.ARCHIVED
+                ? current.status
+                : restored === 0
+                  ? ProductStatus.OUT_OF_STOCK
+                  : ProductStatus.ACTIVE,
+          },
         });
       }
     });

@@ -612,6 +612,69 @@ export class CartService {
     // Clear the cart
     await this.clearCart(userId, companyId);
 
+    // ── Extra payment toward previous outstanding
+
+    if (
+      dto.extraPayment &&
+      dto.extraPayment > 0 &&
+      cart.customerId &&
+      splits.length > 0
+    ) {
+      // Use same payment mode as the primary payment
+      const extraMode: PaymentMode =
+        splits.length > 0 ? splits[0].mode : PaymentMode.CASH;
+
+      const extraPaymentNumber = await this.generatePaymentNumber(companyId);
+
+      await this.prisma.$transaction(async (tx) => {
+        // 1. Create payment record (no invoiceId — it's for general outstanding)
+        await tx.payment.create({
+          data: {
+            paymentNumber: extraPaymentNumber,
+            customerId: cart.customerId!,
+            invoiceId: null,
+            companyId,
+            createdById: userId,
+            amount: parseFloat(dto.extraPayment!.toFixed(2)),
+            paymentMode: extraMode,
+            referenceId: dto.referenceId ?? null,
+            notes: 'Extra payment toward outstanding balance',
+            paymentDate: new Date(),
+          },
+        });
+
+        // 2. Reduce customer's outstanding balance
+        await tx.customer.update({
+          where: { id: cart.customerId! },
+          data: {
+            outstandingBalance: { decrement: dto.extraPayment! },
+          },
+        });
+
+        // 3. Get updated balance for ledger
+        const updated = await tx.customer.findUnique({
+          where: { id: cart.customerId! },
+          select: { outstandingBalance: true },
+        });
+
+        // 4. Add ledger entry
+        await tx.customerLedger.create({
+          data: {
+            customerId: cart.customerId!,
+            companyId,
+            entryType: 'PAYMENT',
+            paymentMode: extraMode,
+            referenceNo: extraPaymentNumber,
+            description: `Extra payment toward outstanding balance`,
+            debitAmount: 0,
+            creditAmount: dto.extraPayment!,
+            balance: updated!.outstandingBalance,
+            entryDate: new Date(),
+          },
+        });
+      });
+    }
+
     return {
       message: isPartialPayment
         ? 'Checkout successful (partial payment recorded)'
@@ -624,6 +687,7 @@ export class CartService {
         balanceDue: finalBalanceDue,
         status: finalStatus,
       },
+      extraPaymentCollected: dto.extraPayment ?? 0,
     };
   }
   // PRIVATE HELPER: Refresh Cart Totals

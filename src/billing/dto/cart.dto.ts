@@ -135,6 +135,15 @@ export class CheckoutCartDto {
   @IsEnum(PaymentMode)
   paymentMode?: PaymentMode;
 
+  @ApiPropertyOptional({
+    description: 'Extra amount to collect toward previous outstanding balance',
+    example: 500,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  extraPayment?: number;
+
   @ApiPropertyOptional({ description: 'Reference ID for payment' })
   @IsOptional()
   @IsString()

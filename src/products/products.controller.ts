@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -27,6 +28,7 @@ import { QueryProductDto } from './dto/query-product.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
 import { BulkDeleteProductDto } from './dto/bulk-delete-product.dto';
+import { SetBomDto } from './dto/bom.dto';
 
 @Controller('products')
 @ApiTags('Products')
@@ -95,10 +97,53 @@ export class ProductsController {
     return this.productsService.removeMany(companyId, dto.ids);
   }
 
+  @Delete(':id/force')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary:
+      'PERMANENTLY delete a product and all its records (invoice items, ' +
+      'stock movements, BOM lines). Destroys billing history — SUPER_ADMIN only.',
+  })
+  forceRemove(@CurrentCompany() companyId: string, @Param('id') id: string) {
+    return this.productsService.forceRemove(companyId, id);
+  }
+
   @Delete(':id')
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Delete a single product' })
   remove(@CurrentCompany() companyId: string, @Param('id') id: string) {
     return this.productsService.remove(companyId, id);
+  }
+
+  // ─── BOM ROUTES ───
+
+  @Get(':id/bom')
+  @Roles(Role.ADMIN, Role.STAFF)
+  @ApiOperation({
+    summary: "Get a product's bill of materials with live component stock",
+  })
+  getBom(@CurrentCompany() companyId: string, @Param('id') id: string) {
+    return this.productsService.getBom(companyId, id);
+  }
+
+  @Put(':id/bom')
+  @Roles(Role.ADMIN)
+  @ApiOperation({
+    summary:
+      "Replace a product's bill of materials (raw materials consumed per unit)",
+  })
+  setBom(
+    @CurrentCompany() companyId: string,
+    @Param('id') id: string,
+    @Body() dto: SetBomDto,
+  ) {
+    return this.productsService.setBom(companyId, id, dto);
+  }
+
+  @Delete(':id/bom')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: "Clear a product's bill of materials" })
+  clearBom(@CurrentCompany() companyId: string, @Param('id') id: string) {
+    return this.productsService.clearBom(companyId, id);
   }
 }

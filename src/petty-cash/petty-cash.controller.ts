@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Query,
   UseGuards,
@@ -16,6 +17,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+
 import { PettyCashService } from './petty-cash.service';
 import { AddCashDto } from './dto/add-cash.dto';
 import { SpendCashDto } from './dto/spend-cash.dto';
@@ -33,39 +35,48 @@ export class PettyCashController {
 
   @Get('balance')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
-  @ApiOperation({ summary: 'Current cash balance + today activity' })
+  @ApiOperation({ summary: 'Get current petty cash balance + today activity' })
+  @ApiResponse({ status: 200, description: 'Balance returned' })
   getBalance(@Req() req: any) {
-    return this.pettyCashService.getBalance(req.user.companyId);
+    return this.pettyCashService.getBalance(req.user.companyIds[0]);
   }
 
   @Get('transactions')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
-  @ApiOperation({ summary: 'Cash movement log' })
+  @ApiOperation({ summary: 'Get petty cash transaction log' })
+  @ApiResponse({ status: 200, description: 'Transactions returned' })
   getTransactions(@Req() req: any, @Query() query: QueryPettyCashDto) {
-    return this.pettyCashService.getTransactions(req.user.companyId, query);
+    return this.pettyCashService.getTransactions(req.user.companyIds[0], query);
   }
 
   @Post('add')
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
-  @ApiOperation({ summary: 'Add cash to box (top-up)' })
-  @ApiResponse({ status: 201, description: 'Cash added' })
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Add cash to petty cash box (IN)' })
+  @ApiResponse({ status: 201, description: 'Cash added, balance updated' })
   addCash(@Req() req: any, @Body() dto: AddCashDto) {
-    return this.pettyCashService.addCash(req.user.companyId, dto);
+    return this.pettyCashService.addCash(req.user.companyIds[0], dto);
   }
 
   @Post('spend')
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
-  @ApiOperation({ summary: 'Record a cash expense' })
-  @ApiResponse({ status: 201, description: 'Expense recorded' })
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Spend cash from petty cash box (OUT)' })
+  @ApiResponse({
+    status: 201,
+    description: 'Expense recorded, balance updated',
+  })
+  @ApiResponse({ status: 400, description: 'Insufficient cash balance' })
   spendCash(@Req() req: any, @Body() dto: SpendCashDto) {
-    return this.pettyCashService.spendCash(req.user.companyId, dto);
+    return this.pettyCashService.spendCash(req.user.companyIds[0], dto);
   }
 
-  @Post('reconcile')
+  @Patch('reconcile')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Reconcile petty cash' })
+  @ApiOperation({ summary: 'Reconcile all petty cash transactions up to now' })
+  @ApiResponse({ status: 200, description: '{ message, reconciledTill }' })
   reconcile(@Req() req: any) {
-    return this.pettyCashService.reconcile(req.user.companyId);
+    return this.pettyCashService.reconcile(req.user.companyIds[0]);
   }
 }
