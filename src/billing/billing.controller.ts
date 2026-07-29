@@ -17,6 +17,7 @@ import {
   ApiResponse,
   ApiQuery,
   ApiSecurity,
+  ApiParam,
 } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
 import {
@@ -36,6 +37,7 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CompanyScopeGuard } from 'src/common/guards/company-scope.guard';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
+import { CorrectInvoiceDto } from './dto/update-invoice.dto';
 
 interface JwtUser {
   sub: string;
@@ -150,6 +152,23 @@ export class BillingController {
     @CurrentCompany() companyId: string,
   ) {
     return this.billingService.updateInvoice(id, dto, companyId);
+  }
+
+  @Patch('invoices/:id/correct')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Correct invoice metadata (SUPER_ADMIN only)',
+    description:
+      'Fix wrong payment mode or reference. Updates the invoice AND all linked payment records atomically.',
+  })
+  @ApiParam({ name: 'id', description: 'Invoice ID' })
+  correctInvoice(
+    @Param('id') id: string,
+    @Body() dto: CorrectInvoiceDto,
+    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
+  ) {
+    return this.billingService.correctInvoice(companyId, id, dto, user.sub);
   }
 
   @Patch('invoices/:id/cancel')

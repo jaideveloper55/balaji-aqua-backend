@@ -21,10 +21,12 @@ import {
   InvoiceType,
   MovementSource,
   MovementType,
+  PaymentMode,
   Prisma,
   ProductStatus,
 } from '@prisma/client';
 import { NotificationService } from 'src/notifications/notification.service';
+import { CorrectInvoiceDto } from './dto/update-invoice.dto';
 
 interface ProcessedItem {
   productId: string;
@@ -855,6 +857,57 @@ export class BillingService {
       data: payments,
       todaySummary,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  //  CORRECT INVOICE
+
+  async correctInvoice(
+    companyId: string,
+    invoiceId: string,
+    dto: CorrectInvoiceDto,
+    userId: string,
+  ) {
+    const invoice = await this.prisma.invoice.findFirst({
+      where: { id: invoiceId, companyId },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException(`Invoice ${invoiceId} not found`);
+    }
+
+    if (invoice.status === 'CANCELLED') {
+      throw new BadRequestException('Cannot correct a cancelled invoice');
+    }
+
+    if (!dto.paymentMode) {
+      throw new BadRequestException('New payment mode is required');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payment.updateMany({
+        where: { invoiceId, companyId },
+        data: {
+          paymentMode: dto.paymentMode as any,
+        },
+      });
+
+      if (dto.correctionNote) {
+        const existingNotes = invoice.notes ?? '';
+        await tx.invoice.update({
+          where: { id: invoiceId },
+          data: {
+            notes: existingNotes
+              ? `${existingNotes}\n[CORRECTED ${new Date().toISOString()}] ${dto.correctionNote}`
+              : `[CORRECTED ${new Date().toISOString()}] ${dto.correctionNote}`,
+          },
+        });
+      }
+    });
+
+    return {
+      message: `Invoice ${invoice.invoiceNumber} corrected successfully`,
+      invoiceId,
     };
   }
 
