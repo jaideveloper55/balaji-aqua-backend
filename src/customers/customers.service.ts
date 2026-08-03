@@ -217,23 +217,23 @@ export class CustomersService {
   }
 
   // DELETE — DELETE /customers/:id
+
   async remove(id: string, companyId: string) {
     const customer = await this.findOne(id, companyId);
 
-    const ledgerCount = await this.prisma.customerLedger.count({
-      where: { customerId: id, companyId },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.customerLedger.deleteMany({
+        where: { customerId: id, companyId },
+      });
+
+      await tx.customerPricing.deleteMany({
+        where: { customerId: id, companyId },
+      });
+
+      await tx.customer.delete({ where: { id } });
     });
 
-    if (ledgerCount > 0) {
-      throw new ConflictException(
-        `Cannot delete ${customer.name} — they have ${ledgerCount} ledger ` +
-          `entries with financial history. Set status to INACTIVE instead to ` +
-          `hide them from active lists while preserving records.`,
-      );
-    }
-
-    await this.prisma.customer.delete({ where: { id } });
-    return { message: 'Customer deleted successfully', id };
+    return { message: `${customer.name} deleted successfully`, id };
   }
 
   // EXPORT — GET /customers/export

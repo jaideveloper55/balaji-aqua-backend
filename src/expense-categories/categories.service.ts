@@ -38,7 +38,7 @@ export class CategoriesService {
     });
   }
 
-  // ─── List (with this-month spend + budget usage) ─────────────────────────
+  // ─── List (with this-month spend + budget usage) ──────────────────────────
   async findAll(companyId: string, query: QueryCategoryDto) {
     const where: Prisma.ExpenseCategoryWhereInput = { companyId };
     if (query.search) {
@@ -78,22 +78,38 @@ export class CategoriesService {
 
     return categories.map((c) => {
       const stat = spendMap.get(c.id) ?? { spent: 0, transactions: 0 };
-      const budget = Number(c.monthlyBudget);
-      const usedPercent =
-        budget > 0 ? Math.round((stat.spent / budget) * 100) : 0;
+      const monthlyBudget = Number(c.monthlyBudget);
+
+      // WHY these field names:
+      // Frontend Categoriespanel.tsx reads: spentThisMonth, monthlyBudget,
+      // percentUsed, budgetRemaining, transactions
+      // The old service returned: spent, budget, usedPercent, remaining
+      // which caused all cards to show ₹0 and 0%
       return {
         ...c,
-        spent: stat.spent,
+        monthlyBudget, // was: budget
+        spentThisMonth: stat.spent, // was: spent
         transactions: stat.transactions,
-        budget,
-        usedPercent,
-        remaining: Math.max(0, budget - stat.spent),
-        isOverBudget: budget > 0 && stat.spent > budget,
+        percentUsed:
+          monthlyBudget > 0
+            ? Math.round((stat.spent / monthlyBudget) * 100)
+            : 0, // was: usedPercent
+        budgetRemaining: Math.max(0, monthlyBudget - stat.spent), // was: remaining
+        isOverBudget: monthlyBudget > 0 && stat.spent > monthlyBudget,
+
+        // Keep old names too for any other consumers
+        spent: stat.spent,
+        budget: monthlyBudget,
+        usedPercent:
+          monthlyBudget > 0
+            ? Math.round((stat.spent / monthlyBudget) * 100)
+            : 0,
+        remaining: Math.max(0, monthlyBudget - stat.spent),
       };
     });
   }
 
-  // ─── Monthly budget overview (for Categories tab header) ─────────────────
+  // ─── Monthly budget overview (for Categories tab header + Budget Alerts) ──
   async getBudgetOverview(companyId: string) {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -112,11 +128,28 @@ export class CategoriesService {
     const totalBudget = Number(budgetAgg._sum.monthlyBudget ?? 0);
     const totalSpent = Number(spendAgg._sum.amount ?? 0);
 
+    const categories = await this.findAll(companyId, {});
+
     return {
       totalSpent,
       totalBudget,
       utilizedPercent:
         totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0,
+
+      overBudgetCount: categories.filter((c) => c.isOverBudget).length,
+
+      categories: categories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        bg: c.bg,
+        monthlyBudget: c.monthlyBudget,
+        spentThisMonth: c.spentThisMonth,
+        percentUsed: c.percentUsed,
+        budgetRemaining: c.budgetRemaining,
+        transactions: c.transactions,
+      })),
     };
   }
 
@@ -162,7 +195,6 @@ export class CategoriesService {
     return this.prisma.expenseCategory.update({ where: { id }, data });
   }
 
-  // ─── Delete (block if expenses linked) ───────────────────────────────────
   async remove(companyId: string, id: string) {
     const category = await this.findOne(companyId, id);
 

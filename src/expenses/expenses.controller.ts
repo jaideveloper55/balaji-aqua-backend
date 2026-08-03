@@ -39,28 +39,32 @@ export class ExpensesController {
   @ApiOperation({ summary: 'Create a new expense' })
   @ApiResponse({ status: 201, description: 'Expense created' })
   create(@Req() req: any, @Body() dto: CreateExpenseDto) {
-    return this.expensesService.create(req.user.companyId, req.user.id, dto);
+    return this.expensesService.create(
+      req.user.companyIds[0],
+      req.user.sub,
+      dto,
+    );
   }
 
   @Get()
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
   @ApiOperation({ summary: 'List expenses (paginated + filtered)' })
   findAll(@Req() req: any, @Query() query: QueryExpenseDto) {
-    return this.expensesService.findAll(req.user.companyId, query);
+    return this.expensesService.findAll(req.user.companyIds[0], query);
   }
 
   @Get('stats')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
   @ApiOperation({ summary: 'Expense overview stats' })
   getStats(@Req() req: any) {
-    return this.expensesService.getStats(req.user.companyId);
+    return this.expensesService.getStats(req.user.companyIds[0]);
   }
 
   @Get(':id')
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.STAFF)
   @ApiOperation({ summary: 'Get one expense' })
   findOne(@Req() req: any, @Param('id') id: string) {
-    return this.expensesService.findOne(req.user.companyId, id);
+    return this.expensesService.findOne(req.user.companyIds[0], id);
   }
 
   @Patch(':id')
@@ -71,7 +75,7 @@ export class ExpensesController {
     @Param('id') id: string,
     @Body() dto: UpdateExpenseDto,
   ) {
-    return this.expensesService.update(req.user.companyId, id, dto);
+    return this.expensesService.update(req.user.companyIds[0], id, dto);
   }
 
   @Delete(':id')
@@ -79,6 +83,6 @@ export class ExpensesController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delete an expense' })
   remove(@Req() req: any, @Param('id') id: string) {
-    return this.expensesService.remove(req.user.companyId, id);
+    return this.expensesService.remove(req.user.companyIds[0], id);
   }
 }
