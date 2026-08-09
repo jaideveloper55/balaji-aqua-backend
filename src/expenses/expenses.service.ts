@@ -1,19 +1,55 @@
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ExpenseStatus } from '@prisma/client';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { QueryExpenseDto } from './dto/query-expense.dto';
 
+function calculateNextDueDate(currentDue: Date, frequency: string): Date {
+  const next = new Date(currentDue);
+
+  switch (frequency.toUpperCase()) {
+    case 'DAILY':
+      next.setDate(next.getDate() + 1);
+      break;
+
+    case 'WEEKLY':
+      next.setDate(next.getDate() + 7);
+      break;
+
+    case 'BIWEEKLY':
+    case 'BI_WEEKLY':
+      next.setDate(next.getDate() + 14);
+      break;
+
+    case 'MONTHLY':
+      next.setMonth(next.getMonth() + 1);
+      break;
+
+    case 'QUARTERLY':
+      next.setMonth(next.getMonth() + 3);
+      break;
+
+    case 'YEARLY':
+    case 'ANNUAL':
+      next.setFullYear(next.getFullYear() + 1);
+      break;
+
+    default:
+      console.warn(
+        `calculateNextDueDate: unknown frequency "${frequency}", defaulting to MONTHLY`,
+      );
+      next.setMonth(next.getMonth() + 1);
+      break;
+  }
+
+  return next;
+}
+
 @Injectable()
 export class ExpensesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // ─── Generate per-company sequential expense number ──────────────────────
   private async generateExpenseNo(companyId: string): Promise<string> {
     const year = new Date().getFullYear();
     const prefix = `EXP-${year}-`;
@@ -32,7 +68,6 @@ export class ExpensesService {
     return `${prefix}${String(next).padStart(3, '0')}`;
   }
 
-  // ─── Create ──────────────────────────────────────────────────────────────
   async create(companyId: string, userId: string, dto: CreateExpenseDto) {
     const expenseNo = await this.generateExpenseNo(companyId);
 
@@ -56,7 +91,6 @@ export class ExpensesService {
     });
   }
 
-  // ─── List (paginated + filtered) ─────────────────────────────────────────
   async findAll(companyId: string, query: QueryExpenseDto) {
     const {
       search,
@@ -212,15 +246,63 @@ export class ExpensesService {
 
   // ─── Update ──────────────────────────────────────────────────────────────
   async update(companyId: string, id: string, dto: UpdateExpenseDto) {
-    await this.findOne(companyId, id); // ownership check
+    // 1. Verify the expense exists and belongs to this company
+    const existing = await this.prisma.expense.findFirst({
+      where: { id, companyId },
+    });
+    if (!existing) throw new NotFoundException();
 
-    const data: Prisma.ExpenseUpdateInput = { ...dto } as any;
-    if (dto.amount !== undefined) data.amount = new Prisma.Decimal(dto.amount);
-    if (dto.gstAmount !== undefined)
-      data.gstAmount = new Prisma.Decimal(dto.gstAmount);
-    if (dto.date !== undefined) data.date = new Date(dto.date);
+    // 2. Update the expense record
+    const updated = await this.prisma.expense.update({
+      where: { id },
+      data: dto,
+    });
 
-    return this.prisma.expense.update({ where: { id }, data });
+    // 3. When a recurring-generated expense is marked PAID, advance the
+    //    recurring schedule's `nextDue` so it stops showing as overdue.
+    //
+    //    WHY: RecurringExpense is a SCHEDULE ("charge ₹700 every month for wifi").
+    //    Paying the expense updates the Expense table only. The schedule must
+    //    also advance its `nextDue` — otherwise it keeps showing "Overdue by 1 day"
+    //    even after you've paid it.
+    //
+    //    FIELD NAMES (from your actual schema.prisma):
+    //      Expense.recurringId          ← links to its recurring schedule
+    //      RecurringExpense.nextDue     ← next due date (NOT nextDueDate)
+    //      RecurringExpense.frequency   ← RecurringFrequency enum
+    //      RecurringExpense.lastPaidAt  ← add to schema (schema-additions.txt)
+    //      RecurringExpense.lastPaidAmount ← add to schema (schema-additions.txt)
+
+    const isNowPaid = dto.status === 'PAID' && existing.status !== 'PAID';
+
+    // Only advance the schedule if:
+    //   a) expense was just marked PAID (not already paid)
+    //   b) expense was generated from a recurring schedule (recurringId is set)
+    if (isNowPaid && existing.recurringId) {
+      const schedule = await this.prisma.recurringExpense.findUnique({
+        where: { id: existing.recurringId }, // ✅ recurringId (not recurringExpenseId)
+      });
+
+      if (schedule) {
+        // Advance to the next period based on frequency
+        // e.g. MONTHLY: Aug 7 → Sep 7
+        const nextDue = calculateNextDueDate(
+          schedule.nextDue, // ✅ nextDue (not nextDueDate)
+          schedule.frequency,
+        );
+
+        await this.prisma.recurringExpense.update({
+          where: { id: schedule.id },
+          data: {
+            nextDue,
+            lastPaidAt: new Date(),
+            lastPaidAmount: existing.amount,
+          },
+        });
+      }
+    }
+
+    return updated;
   }
 
   // ─── Delete ──────────────────────────────────────────────────────────────

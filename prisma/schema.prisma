@@ -88,7 +88,7 @@ enum InvoiceType {
   WALK_IN
 }
 
-// ─── COMPANY ────────────────────────────────────────────────────────────────
+// COMPANY 
 model Company {
   id        String      @id @default(uuid())
   name      String
@@ -120,9 +120,10 @@ model Company {
   pettyCashBox          PettyCashBox?
 
   @@map("companies")
+  EventOrder EventOrder[]
 }
 
-// ─── USER ───────────────────────────────────────────────────────────────────
+//  USER 
 model User {
   id           String  @id @default(uuid())
   email        String  @unique
@@ -149,9 +150,11 @@ model User {
 
   @@index([email])
   @@map("users")
+  EventOrder EventOrder[] @relation("EventOrderCreatedBy")
+  EventOrderPayment EventOrderPayment[] @relation("EventPaymentCreatedBy")
 }
 
-// ─── USER COMPANY JOIN TABLE ────────────────────────────────────────────────
+// USER COMPANY JOIN TABLE 
 model UserCompany {
   userId    String
   companyId String
@@ -165,7 +168,7 @@ model UserCompany {
   @@map("user_companies")
 }
 
-// ─── CUSTOMER ───────────────────────────────────────────────────────────────
+//  CUSTOMER
 
 model Customer {
   id           String @id @default(cuid())
@@ -207,9 +210,10 @@ model Customer {
   @@index([companyId])
   @@index([companyId, status])
   @@map("customers")
+  EventOrder EventOrder[]
 }
 
-// ─── CUSTOMER PRICING ───────────────────────────────────────────────────────
+//  CUSTOMER PRICING 
 model CustomerPricing {
   id            String    @id @default(cuid())
   customerId    String
@@ -230,7 +234,7 @@ model CustomerPricing {
   @@map("customer_pricing")
 }
 
-// ─── CUSTOMER LEDGER ────────────────────────────────────────────────────────
+// CUSTOMER LEDGER 
 
 model CustomerLedger {
   id          String          @id @default(cuid())
@@ -262,7 +266,7 @@ model CustomerLedger {
   @@map("customer_ledger")
 }
 
-// ─── CATEGORY ───────────────────────────────────────────────────────────────
+//  CATEGORY 
 
 model Category {
   id          String  @id @default(cuid())
@@ -288,7 +292,9 @@ model Category {
   @@map("categories")
 }
 
-// ─── PRODUCT ────────────────────────────────────────────────────────────────
+
+
+//  PRODUCT
 
 model Product {
   id          String  @id @default(cuid())
@@ -332,6 +338,11 @@ model Product {
   bomLines   ProductBom[] @relation("BomParent")
   usedInBoms ProductBom[] @relation("BomComponent")
 
+  eventOrderItems EventOrderItem[] @relation("EventOrderItemProduct")
+
+  bom        BomItem[] @relation("ProductBom")
+
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -340,9 +351,32 @@ model Product {
   @@index([companyId, status])
   @@index([categoryId])
   @@map("products")
+
+  BomItem BomItem[] @relation("RawMaterialBom")
 }
 
-// ─── INVOICE ────────────────────────────────────────────────────────────────
+model BomItem {
+  id        String @id @default(uuid())
+  companyId String
+
+  productId String
+  product   Product @relation("ProductBom", fields: [productId], references: [id], onDelete: Cascade)
+
+  rawMaterialId String
+  rawMaterial   Product @relation("RawMaterialBom", fields: [rawMaterialId], references: [id], onDelete: Restrict)
+
+  quantityPerUnit Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, rawMaterialId])
+  @@index([companyId])
+  @@index([productId])
+  @@map("bom_items")
+}
+
+// INVOICE
 model Invoice {
   id            String @id @default(cuid())
   invoiceNumber String
@@ -393,7 +427,7 @@ model Invoice {
   @@map("invoices")
 }
 
-// ─── INVOICE ITEM ───────────────────────────────────────────────────────────
+// INVOICE ITEM 
 model InvoiceItem {
   id String @id @default(cuid())
 
@@ -742,6 +776,9 @@ model RecurringExpense {
 
   reminderDays Int @default(5)
 
+  lastPaidAt     DateTime?               
+  lastPaidAmount Decimal? @db.Decimal(12, 2)
+
   reminderAckedFor DateTime?
 
   // Auto-generated expenses reference this
@@ -817,4 +854,181 @@ model ProductBom {
   @@index([companyId, productId])
   @@index([componentId])
   @@map("product_boms")
+}
+
+
+
+//  EVENT ORDER ENUMS
+
+enum EventType {
+  WEDDING
+  ENGAGEMENT
+  BIRTHDAY
+  CORPORATE
+  RELIGIOUS
+  HOUSE_WARMING
+  OTHER
+}
+
+enum EventOrderStatus {
+  DRAFT         
+  CONFIRMED   
+  IN_PROGRESS   
+  DELIVERED     
+  COMPLETED   
+  CANCELLED     
+}
+
+enum EventPaymentStatus {
+  UNPAID  
+  PARTIAL  
+  PAID     
+}
+
+
+enum EventCancellationReason {
+  CUSTOMER_POSTPONED
+  CUSTOMER_CANCELLED
+  DATE_CHANGED
+  PAYMENT_NOT_RECEIVED
+  STOCK_UNAVAILABLE
+  OTHER
+}
+
+
+//  EVENT ORDER
+
+model EventOrder {
+  id          String @id @default(cuid())
+  eventNumber String 
+
+ // Event Details 
+  eventName      String
+  eventType      EventType
+  expectedGuests Int
+  eventDate      DateTime
+  deliveryTime   String
+  pickupTime     String?
+
+
+  customerId    String?
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  customerName  String   
+  customerPhone String
+
+ // Venue Details 
+  venueName    String
+  venueAddress String
+  venueCity    String
+  venuePincode String?
+
+  // On-site Coordinator 
+  onSiteContactName  String?
+  onSiteContactPhone String?
+
+
+ // Pricing
+  subtotal        Float @default(0) 
+  discount        Float @default(0) 
+  gstEnabled      Boolean @default(false)
+  gstRate         Float @default(18) 
+  cgst            Float @default(0)
+  sgst            Float @default(0)
+  totalAmount     Float @default(0) 
+  advancePaid     Float @default(0) 
+  securityDeposit Float @default(0) 
+  balanceDue      Float @default(0) 
+
+ // Status
+  status        EventOrderStatus   @default(DRAFT)
+  paymentStatus EventPaymentStatus @default(UNPAID)
+
+ // Cancellation
+  cancellationReason EventCancellationReason?
+  cancellationNote   String?
+  cancelledAt        DateTime?
+  cancelledById      String?
+
+  notes String?
+
+// Multi-tenancy
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("EventOrderCreatedBy", fields: [createdById], references: [id])
+
+  items    EventOrderItem[]
+  payments EventOrderPayment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([eventNumber, companyId])
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, eventDate])
+  @@index([customerId])
+  @@map("event_orders")
+
+}
+
+
+// EVENT ORDER ITEMS
+
+model EventOrderItem {
+  id    String     @id @default(cuid())
+  eventOrderId String
+  eventOrder   EventOrder @relation(fields: [eventOrderId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation("EventOrderItemProduct", fields: [productId], references: [id], onDelete: Restrict)
+
+  productName String
+  sku         String
+  unit        String
+
+  quantity  Int
+  unitPrice Float
+  lineTotal Float
+
+  companyId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([eventOrderId])
+  @@index([companyId])
+  @@index([productId])
+  @@map("event_order_items")
+
+}
+
+
+
+//  EVENT ORDER PAYMENTS
+
+model EventOrderPayment {
+id           String     @id @default(cuid())
+eventOrderId String
+eventOrder   EventOrder @relation(fields: [eventOrderId], references: [id], onDelete: Cascade)
+
+paymentNumber String
+amount        Float
+paymentMode   PaymentMode
+referenceId   String?
+notes         String?
+paymentDate   DateTime @default(now())
+
+companyId   String
+createdById String
+createdBy   User   @relation("EventPaymentCreatedBy", fields: [createdById], references: [id])
+
+createdAt DateTime @default(now())
+
+@@unique([paymentNumber, companyId])
+@@index([companyId])
+@@index([eventOrderId])
+@@map("event_order_payments")
+
 }

@@ -22,6 +22,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { VendorsModule } from './vendors/Vendors.module';
 import { RecurringModule } from './recurring-expenses/Recurring.module';
 import { PettyCashModule } from './petty-cash/petty-cash.module';
+import { EventOrdersModule } from './event-orders/event-orders.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { PettyCashModule } from './petty-cash/petty-cash.module';
     ProductsModule,
     InventoryModule,
     BillingModule,
+    EventOrdersModule,
     ExpensesModule,
     CategoriesModule,
     VendorsModule,
