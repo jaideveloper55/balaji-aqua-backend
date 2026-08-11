@@ -130,6 +130,11 @@ export class CartService {
     const updatedItems: any[] = [];
 
     for (const item of cart.items) {
+      if (item.isCustomPrice) {
+        updatedItems.push(item);
+        continue;
+      }
+
       const correctPrice = cart.customerId
         ? await this.billingService.getCustomerPrice(
             cart.customerId,
@@ -186,17 +191,19 @@ export class CartService {
 
     const cart = await this.getOrCreateCart(userId, companyId);
 
-    let effectivePrice: number;
+    const defaultPrice = cart.customerId
+      ? await this.billingService.getCustomerPrice(
+          cart.customerId,
+          dto.productId,
+          companyId,
+        )
+      : product.basePrice;
 
-    if (cart.customerId) {
-      effectivePrice = await this.billingService.getCustomerPrice(
-        cart.customerId,
-        dto.productId,
-        companyId,
-      );
-    } else {
-      effectivePrice = dto.unitPrice ?? product.basePrice;
-    }
+    // Only counts as an override when the caller explicitly sends it.
+    // "Not sent" (undefined) always falls through to customer/base price —
+    // this is what makes it safe for the normal add-to-cart click.
+    const isOverride = dto.unitPrice !== undefined;
+    const effectivePrice = dto.unitPrice ?? defaultPrice;
 
     const existingItem = cart.items.find((i) => i.productId === dto.productId);
 
@@ -208,12 +215,26 @@ export class CartService {
             `Cannot add ${dto.quantity} more. Stock available: ${product.stock}, already in cart: ${existingItem.quantity}`,
           );
         }
+
+        const priceToUse = isOverride
+          ? effectivePrice
+          : existingItem.isCustomPrice
+            ? existingItem.unitPrice
+            : effectivePrice;
+        const staysCustom = isOverride || existingItem.isCustomPrice;
+
         await tx.cartItem.update({
           where: { id: existingItem.id },
           data: {
             quantity: newQty,
-            unitPrice: effectivePrice,
-            lineTotal: newQty * effectivePrice,
+            unitPrice: priceToUse,
+            lineTotal: newQty * priceToUse,
+            isCustomPrice: staysCustom,
+            basePrice: staysCustom
+              ? isOverride
+                ? defaultPrice
+                : existingItem.basePrice
+              : null,
           },
         });
       } else {
@@ -227,6 +248,8 @@ export class CartService {
             quantity: dto.quantity,
             unitPrice: effectivePrice,
             lineTotal: dto.quantity * effectivePrice,
+            isCustomPrice: isOverride,
+            basePrice: isOverride ? defaultPrice : null,
             companyId,
           },
         });
@@ -253,28 +276,59 @@ export class CartService {
   ) {
     const cartItem = await this.prisma.cartItem.findFirst({
       where: { id: cartItemId, cart: { userId, companyId } },
-      include: { cart: true, product: { select: { stock: true } } },
+      include: {
+        cart: true,
+        product: { select: { stock: true, basePrice: true } },
+      },
     });
 
     if (!cartItem) throw new NotFoundException('Cart item not found');
 
-    const effectivePrice = dto.unitPrice ?? cartItem.unitPrice;
+    const newQuantity = dto.quantity ?? cartItem.quantity;
 
     await this.prisma.$transaction(async (tx) => {
-      if (dto.quantity === 0) {
+      if (newQuantity === 0) {
         await tx.cartItem.delete({ where: { id: cartItemId } });
       } else {
-        if (dto.quantity > cartItem.product.stock) {
+        if (newQuantity > cartItem.product.stock) {
           throw new BadRequestException(
             `Only ${cartItem.product.stock} units available in stock`,
           );
         }
+
+        let newUnitPrice = cartItem.unitPrice;
+        let isCustomPrice = cartItem.isCustomPrice;
+        let basePriceSnapshot = cartItem.basePrice;
+
+        if (dto.resetToDefaultPrice) {
+          newUnitPrice = cartItem.cart.customerId
+            ? await this.billingService.getCustomerPrice(
+                cartItem.cart.customerId,
+                cartItem.productId,
+                companyId,
+              )
+            : cartItem.product.basePrice;
+          isCustomPrice = false;
+          basePriceSnapshot = null;
+        } else if (dto.unitPrice !== undefined) {
+          if (dto.unitPrice < 0) {
+            throw new BadRequestException('Rate cannot be negative');
+          }
+          if (!cartItem.isCustomPrice) {
+            basePriceSnapshot = cartItem.unitPrice;
+          }
+          newUnitPrice = dto.unitPrice;
+          isCustomPrice = true;
+        }
+
         await tx.cartItem.update({
           where: { id: cartItemId },
           data: {
-            quantity: dto.quantity,
-            unitPrice: effectivePrice,
-            lineTotal: dto.quantity * effectivePrice,
+            quantity: newQuantity,
+            unitPrice: newUnitPrice,
+            lineTotal: newQuantity * newUnitPrice,
+            isCustomPrice,
+            basePrice: basePriceSnapshot,
           },
         });
       }
@@ -322,6 +376,8 @@ export class CartService {
     await this.prisma.$transaction(async (tx) => {
       if (repriceItems) {
         for (const item of cart.items) {
+          if (item.isCustomPrice) continue;
+
           const newPrice = newCustomerId
             ? await this.billingService.getCustomerPrice(
                 newCustomerId,

@@ -552,9 +552,11 @@ model CartItem {
   sku         String
   unit        String
 
-  quantity  Int
-  unitPrice Float
-  lineTotal Float
+  quantity      Int
+  unitPrice     Float
+  lineTotal     Float
+  isCustomPrice Boolean @default(false)
+  basePrice     Float?
 
   companyId String
 

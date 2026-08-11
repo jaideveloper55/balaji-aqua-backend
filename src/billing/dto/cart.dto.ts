@@ -38,16 +38,19 @@ export class AddToCartDto {
 
 //  UPDATE ITEM QUANTITY
 export class UpdateCartItemDto {
-  @ApiProperty({ description: 'New quantity (set to 0 to remove)', example: 2 })
+  @IsOptional()
   @IsInt()
   @Min(0)
-  quantity: number;
+  quantity?: number;
 
-  @ApiPropertyOptional({ description: 'Updated unit price' })
   @IsOptional()
   @IsNumber()
   @Min(0)
   unitPrice?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  resetToDefaultPrice?: boolean;
 }
 
 //  UPDATE CART SETTINGS
