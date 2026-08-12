@@ -1,4 +1,4 @@
-import { ApiPropertyOptional, OmitType } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
@@ -17,9 +17,7 @@ import {
   CustomerType,
 } from './create-customer.dto';
 
-export class UpdateCustomerDto extends PartialType(
-  OmitType(CreateCustomerDto, ['outstandingBalance'] as const),
-) {
+export class UpdateCustomerDto extends PartialType(CreateCustomerDto) {
   @ApiPropertyOptional({
     description: 'Update customer status (only ADMIN can do this)',
     enum: CustomerStatus,
