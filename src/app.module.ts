@@ -23,6 +23,7 @@ import { VendorsModule } from './vendors/Vendors.module';
 import { RecurringModule } from './recurring-expenses/Recurring.module';
 import { PettyCashModule } from './petty-cash/petty-cash.module';
 import { EventOrdersModule } from './event-orders/event-orders.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { EventOrdersModule } from './event-orders/event-orders.module';
     RecurringModule,
     PettyCashModule,
     NotificationsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [
