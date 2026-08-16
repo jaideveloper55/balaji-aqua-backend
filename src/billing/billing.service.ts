@@ -1189,6 +1189,74 @@ export class BillingService {
     };
   }
 
+  async deleteInvoice(invoiceId: string, companyId: string, userId: string) {
+    const invoice = await this.prisma.invoice.findFirst({
+      where: { id: invoiceId, companyId },
+      include: {
+        items: true,
+        payments: true,
+      },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      for (const item of invoice.items) {
+        const updated = await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: { increment: item.quantity } },
+          select: { stock: true },
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            companyId,
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            unit: item.unit,
+            type: MovementType.STOCK_IN,
+            source: MovementSource.CUSTOMER_RETURN,
+            quantity: item.quantity,
+            balanceAfter: updated.stock,
+            referenceId: invoice.invoiceNumber,
+            remarks: `Stock restored from deleted invoice ${invoice.invoiceNumber}`,
+            createdById: userId,
+          },
+        });
+      }
+
+      // Roll back the customer's outstanding balance.
+      if (invoice.customerId && invoice.balanceDue > 0) {
+        await tx.customer.update({
+          where: { id: invoice.customerId },
+          data: {
+            outstandingBalance: { decrement: invoice.balanceDue },
+          },
+        });
+      }
+
+      // Delete payments explicitly (in case cascade isn't set on the FK).
+      await tx.payment.deleteMany({
+        where: { invoiceId: invoice.id },
+      });
+
+      // Finally, delete the invoice. InvoiceItem rows cascade-delete via FK.
+      await tx.invoice.delete({
+        where: { id: invoice.id },
+      });
+
+      return {
+        success: true,
+        message: `Invoice ${invoice.invoiceNumber} deleted. Stock restored, outstanding rolled back.`,
+        restoredItems: invoice.items.length,
+        refundedPayments: invoice.payments.length,
+      };
+    });
+  }
+
   // GET POS PRODUCTS
 
   async getPOSProducts(companyId: string, search?: string) {

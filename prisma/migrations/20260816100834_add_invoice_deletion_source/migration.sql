@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "MovementSource" ADD VALUE 'INVOICE_DELETION';

@@ -581,6 +581,7 @@ enum MovementSource {
   PURCHASE
   CUSTOMER_RETURN
   OPENING_STOCK
+  INVOICE_DELETION 
 
   // Stock Out reasons
   SALE

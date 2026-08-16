@@ -9,6 +9,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Delete,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -183,6 +184,27 @@ export class BillingController {
     @CurrentCompany() companyId: string,
   ) {
     return this.billingService.cancelInvoice(id, companyId);
+  }
+
+  @Delete('invoices/:id')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Hard delete an invoice (SUPER_ADMIN only)',
+    description:
+      'Permanently removes the invoice, refunds payments, restores stock, and rolls back customer outstanding balance. Use for wrongly-generated invoices only.',
+  })
+  @ApiResponse({ status: 200, description: 'Invoice deleted successfully' })
+  @ApiResponse({
+    status: 403,
+    description: 'Only SUPER_ADMIN can delete invoices',
+  })
+  @ApiResponse({ status: 404, description: 'Invoice not found' })
+  deleteInvoice(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtUser,
+    @CurrentCompany() companyId: string,
+  ) {
+    return this.billingService.deleteInvoice(id, companyId, user.sub);
   }
 
   // ──────────────────────────────────────────────────────────────────────
