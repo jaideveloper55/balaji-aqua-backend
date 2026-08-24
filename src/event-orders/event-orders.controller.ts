@@ -1,31 +1,3 @@
-// src/event-orders/event-orders.controller.ts
-//
-// PATTERN CHANGE: match the Customers module pattern exactly.
-//
-// BEFORE (broken):
-//   @UseGuards(JwtAuthGuard, RolesGuard)
-//   user.companyId  ← undefined (JWT has companyIds[], not companyId)
-//   user.userId     ← undefined (JWT has sub, not userId)
-//
-// AFTER (correct — same as CustomersController):
-//   @UseGuards(JwtAuthGuard, RolesGuard, CompanyScopeGuard)
-//   @CurrentCompany() companyId  ← reads X-Company-Id header (guaranteed string)
-//   @CurrentUser() user          ← reads JWT, use user.sub as userId
-//
-// WHY X-Company-Id header instead of JWT companyId:
-//   A user can belong to multiple companies (multi-tenant SaaS).
-//   The JWT holds companyIds[] (all their companies).
-//   The frontend sends X-Company-Id header to say "I'm operating as THIS company now."
-//   CompanyScopeGuard validates that X-Company-Id is in the user's companyIds[].
-//   This is safer than trusting user.companyIds[0] which could be wrong
-//   if the user switches companies.
-//
-// FRONTEND CHANGE NEEDED:
-//   Every API call to /event-orders must include the header:
-//   'X-Company-Id': '<active company UUID>'
-//   Your authAxios instance should already set this if Customers module works.
-//   Check your axios interceptor — it likely adds X-Company-Id from localStorage/store.
-
 import {
   Controller,
   Get,
@@ -59,10 +31,10 @@ import { CompanyScopeGuard } from 'src/common/guards/company-scope.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { CurrentCompany } from 'src/common/guards/current-company.decorator';
+import type { JwtPayload } from '../common/decorators/current-user.decorator';
 
-// JwtPayload shape — matches current-user.decorator.ts exactly
 interface JwtAuthUser {
-  sub: string; // userId
+  sub: string;
   email: string;
   role: Role;
   companyIds: string[];
@@ -77,10 +49,10 @@ interface JwtAuthUser {
   description: 'Active company UUID (from TenantSelector in frontend)',
   required: true,
 })
-// FIXED: added CompanyScopeGuard — same as CustomersController
 @UseGuards(JwtAuthGuard, RolesGuard, CompanyScopeGuard)
 @Controller('event-orders')
 export class EventOrdersController {
+  eventsService: any;
   constructor(private readonly eventOrdersService: EventOrdersService) {}
 
   // ─── CREATE ────────────────────────────────────────────────────────────
@@ -95,7 +67,7 @@ export class EventOrdersController {
   })
   create(
     @Body() dto: CreateEventOrderDto,
-    @CurrentCompany() companyId: string, // ← from X-Company-Id header
+    @CurrentCompany() companyId: string,
     @CurrentUser() user: JwtAuthUser,
   ) {
     return this.eventOrdersService.create(dto, companyId, user.sub);
@@ -198,5 +170,26 @@ export class EventOrdersController {
   @ApiOperation({ summary: 'Delete a DRAFT event order' })
   remove(@Param('id') id: string, @CurrentCompany() companyId: string) {
     return this.eventOrdersService.remove(id, companyId);
+  }
+
+  @Delete(':id')
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({
+    summary: 'Hard delete an event order (SUPER_ADMIN only)',
+    description:
+      'Permanently removes the event, its items, and all payments recorded against it.',
+  })
+  @ApiResponse({ status: 200, description: 'Event deleted successfully' })
+  @ApiResponse({
+    status: 403,
+    description: 'Only SUPER_ADMIN can delete events',
+  })
+  @ApiResponse({ status: 404, description: 'Event not found' })
+  deleteEventOrder(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @CurrentCompany() companyId: string,
+  ) {
+    return this.eventsService.deleteEventOrder(id, companyId, user.sub);
   }
 }

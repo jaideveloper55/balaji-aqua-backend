@@ -531,7 +531,7 @@ export class EventOrdersService {
     });
   }
 
-  //  DELETE
+
 
   async remove(id: string, companyId: string) {
     const existing = await this.prisma.eventOrder.findFirst({
@@ -539,12 +539,36 @@ export class EventOrdersService {
     });
     if (!existing) throw new NotFoundException(`Event order ${id} not found`);
 
-    if (existing.status !== EventOrderStatus.DRAFT) {
-      throw new ForbiddenException(
-        'Only DRAFT event orders can be deleted. Use cancel for confirmed events.',
-      );
-    }
-
     return this.prisma.eventOrder.delete({ where: { id } });
+  }
+
+  async deleteEventOrder(id: string, companyId: string, _userId: string) {
+    const event = await this.prisma.eventOrder.findFirst({
+      where: { id, companyId },
+      include: {
+        items: true,
+        payments: true,
+      },
+    });
+
+    if (!event) throw new NotFoundException('Event order not found');
+
+    return this.prisma.$transaction(async (tx) => {
+      // Delete direct event payments (EventOrderPayment rows).
+      await tx.eventOrderPayment.deleteMany({
+        where: { eventOrderId: event.id },
+      });
+
+      // Delete the event order. EventOrderItem cascades via FK.
+      await tx.eventOrder.delete({
+        where: { id: event.id },
+      });
+
+      return {
+        success: true,
+        message: `Event ${event.eventNumber} deleted.`,
+        refundedEventPayments: event.payments.length,
+      };
+    });
   }
 }
