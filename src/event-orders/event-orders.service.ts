@@ -370,13 +370,19 @@ export class EventOrdersService {
       );
     }
 
-    if (
-      newStatus === EventOrderStatus.DELIVERED &&
-      existing.status !== EventOrderStatus.DELIVERED
-    ) {
+    // "Fulfilled" = goods have physically left the building. Once an event
+    // FIRST reaches either DELIVERED or COMPLETED, reserved stock must be
+    // consumed (decrement both stock and reserved) exactly once.
+    const FULFILLED_STATUSES: EventOrderStatus[] = [
+      EventOrderStatus.DELIVERED,
+      EventOrderStatus.COMPLETED,
+    ];
+    const wasAlreadyFulfilled = FULFILLED_STATUSES.includes(existing.status);
+    const isBecomingFulfilled = FULFILLED_STATUSES.includes(newStatus);
+
+    if (isBecomingFulfilled && !wasAlreadyFulfilled) {
       return this.prisma.$transaction(async (tx) => {
         for (const item of existing.items) {
-          // Decrement both stock AND reserved (item is now delivered, not just reserved)
           const updatedProduct = await tx.product.update({
             where: { id: item.productId },
             data: {
@@ -385,8 +391,6 @@ export class EventOrdersService {
             },
           });
 
-          // Log a stock movement for audit trail
-          // WHY: You should always be able to answer "why did stock decrease?"
           await tx.stockMovement.create({
             data: {
               productId: item.productId,
@@ -398,7 +402,11 @@ export class EventOrdersService {
               quantity: item.quantity,
               balanceAfter: updatedProduct.stock,
               referenceId: existing.eventNumber,
-              remarks: `Delivered for event: ${existing.eventName}`,
+              remarks: `${
+                newStatus === EventOrderStatus.COMPLETED
+                  ? 'Completed'
+                  : 'Delivered'
+              } for event: ${existing.eventName}`,
               createdById: userId,
               companyId,
             },
@@ -531,17 +539,6 @@ export class EventOrdersService {
     });
   }
 
-
-
-  async remove(id: string, companyId: string) {
-    const existing = await this.prisma.eventOrder.findFirst({
-      where: { id, companyId },
-    });
-    if (!existing) throw new NotFoundException(`Event order ${id} not found`);
-
-    return this.prisma.eventOrder.delete({ where: { id } });
-  }
-
   async deleteEventOrder(id: string, companyId: string, _userId: string) {
     const event = await this.prisma.eventOrder.findFirst({
       where: { id, companyId },
@@ -553,13 +550,29 @@ export class EventOrdersService {
 
     if (!event) throw new NotFoundException('Event order not found');
 
+    const RESERVATION_ALREADY_RESOLVED: EventOrderStatus[] = [
+      EventOrderStatus.CANCELLED,
+      EventOrderStatus.DELIVERED,
+      EventOrderStatus.COMPLETED,
+    ];
+    const needsReservationRelease = !RESERVATION_ALREADY_RESOLVED.includes(
+      event.status,
+    );
+
     return this.prisma.$transaction(async (tx) => {
-      // Delete direct event payments (EventOrderPayment rows).
+      if (needsReservationRelease) {
+        for (const item of event.items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { reserved: { decrement: item.quantity } },
+          });
+        }
+      }
+
       await tx.eventOrderPayment.deleteMany({
         where: { eventOrderId: event.id },
       });
 
-      // Delete the event order. EventOrderItem cascades via FK.
       await tx.eventOrder.delete({
         where: { id: event.id },
       });
@@ -568,6 +581,7 @@ export class EventOrdersService {
         success: true,
         message: `Event ${event.eventNumber} deleted.`,
         refundedEventPayments: event.payments.length,
+        releasedReservedStock: needsReservationRelease,
       };
     });
   }

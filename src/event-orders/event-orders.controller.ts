@@ -52,7 +52,6 @@ interface JwtAuthUser {
 @UseGuards(JwtAuthGuard, RolesGuard, CompanyScopeGuard)
 @Controller('event-orders')
 export class EventOrdersController {
-  eventsService: any;
   constructor(private readonly eventOrdersService: EventOrdersService) {}
 
   // ─── CREATE ────────────────────────────────────────────────────────────
@@ -163,21 +162,20 @@ export class EventOrdersController {
     return this.eventOrdersService.recordPayment(id, dto, companyId, user.sub);
   }
 
-  // ─── DELETE ────────────────────────────────────────────────────────────
-  @Delete(':id')
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete a DRAFT event order' })
-  remove(@Param('id') id: string, @CurrentCompany() companyId: string) {
-    return this.eventOrdersService.remove(id, companyId);
-  }
-
+  // ─── DELETE (SUPER_ADMIN only, hard delete) ───────────────────────────
+  // This is the ONLY delete route on this controller. A previous version
+  // had a second `@Delete(':id')` (a leftover `remove()` handler open to
+  // ADMIN as well as SUPER_ADMIN) sitting on the exact same path — NestJS
+  // silently only ever runs the first-registered handler for a duplicate
+  // route, so that second one was permanently dead code, and worse, the
+  // FIRST one (the ADMIN-permissive one) was the one actually executing on
+  // every request. Do not add a second delete route back here.
   @Delete(':id')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Hard delete an event order (SUPER_ADMIN only)',
     description:
-      'Permanently removes the event, its items, and all payments recorded against it.',
+      'Permanently removes the event, its items, and all payments recorded against it. Releases any reserved stock the event was still holding.',
   })
   @ApiResponse({ status: 200, description: 'Event deleted successfully' })
   @ApiResponse({
@@ -190,6 +188,6 @@ export class EventOrdersController {
     @CurrentUser() user: JwtPayload,
     @CurrentCompany() companyId: string,
   ) {
-    return this.eventsService.deleteEventOrder(id, companyId, user.sub);
+    return this.eventOrdersService.deleteEventOrder(id, companyId, user.sub);
   }
 }
