@@ -14,18 +14,34 @@ import {
   UpdateCustomerPricingDto,
 } from './dto/customer-pricing.dto';
 import { UpdateCustomerDto } from './dto/Update query customer.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class CustomersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // HELPER: Generate CUS-001, CUS-002...
-  private async generateCustomerCode(companyId: string): Promise<string> {
-    const count = await this.prisma.customer.count({ where: { companyId } });
-    return `CUS-${String(count + 1).padStart(3, '0')}`;
+  private async generateCustomerCode(
+    client: Prisma.TransactionClient | PrismaService,
+    companyId: string,
+  ): Promise<string> {
+    const last = await client.customer.findFirst({
+      where: { companyId, customerCode: { startsWith: 'CUS-' } },
+      orderBy: { customerCode: 'desc' },
+      select: { customerCode: true },
+    });
+
+    let nextSerial = 1;
+    if (last?.customerCode) {
+      const lastSerial = parseInt(last.customerCode.slice(4), 10);
+      if (!isNaN(lastSerial)) nextSerial = lastSerial + 1;
+    }
+
+    return `CUS-${String(nextSerial).padStart(3, '0')}`;
   }
 
   // CREATE — POST /customers
+
   async create(createCustomerDto: CreateCustomerDto, companyId: string) {
     const existing = await this.prisma.customer.findFirst({
       where: { phone: createCustomerDto.phone, companyId },
@@ -36,19 +52,32 @@ export class CustomersService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const count = await tx.customer.count({ where: { companyId } });
-      const customerCode = `CUS-${String(count + 1).padStart(3, '0')}`;
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const customerCode = await this.generateCustomerCode(tx, companyId);
 
-      return tx.customer.create({
-        data: {
-          ...createCustomerDto,
-          customerCode,
-          companyId,
-          status: 'ACTIVE',
-        },
-      });
-    });
+          return tx.customer.create({
+            data: {
+              ...createCustomerDto,
+              customerCode,
+              companyId,
+              status: 'ACTIVE',
+            },
+          });
+        });
+      } catch (err) {
+        const isCodeCollision =
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === 'P2002' &&
+          (err.meta?.target as string[])?.includes('customerCode');
+
+        if (!isCodeCollision || attempt === MAX_ATTEMPTS) throw err;
+      }
+    }
+
+    throw new Error('Failed to create customer after multiple attempts');
   }
 
   // LIST — GET /customers
