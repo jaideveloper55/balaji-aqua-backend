@@ -7,9 +7,67 @@ import {
   StockRowDto,
 } from './dto/dashboard-summary.dto';
 
+interface AsOfBalance {
+  balance: number;
+  oldestInvoiceDate: Date | null;
+}
+
 @Injectable()
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // Reconstructs every customer's outstanding balance AS OF a specific
+  // date, using the Invoice and Payment tables directly — both are
+  // permanent, dated records, so this is real point-in-time accounting
+  // (sum of invoices minus sum of payments up to a cutoff), not a guess.
+  // This single map feeds the KPI card, the risk donut, AND the
+  // "Customers with Dues" list below — one source of truth, so none of
+  // them can ever disagree with each other again.
+  private async getAsOfBalances(
+    companyId: string,
+    asOfDate: Date,
+  ): Promise<Map<string, AsOfBalance>> {
+    const [invoiceSums, paymentSums] = await Promise.all([
+      this.prisma.invoice.groupBy({
+        by: ['customerId'],
+        where: {
+          companyId,
+          customerId: { not: null },
+          invoiceDate: { lte: asOfDate },
+          status: { not: 'CANCELLED' },
+        },
+        _sum: { totalAmount: true },
+        _min: { invoiceDate: true },
+      }),
+      this.prisma.payment.groupBy({
+        by: ['customerId'],
+        where: { companyId, paymentDate: { lte: asOfDate } },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const balances = new Map<string, AsOfBalance>();
+    for (const row of invoiceSums) {
+      if (!row.customerId) continue;
+      balances.set(row.customerId, {
+        balance: row._sum.totalAmount ?? 0,
+        oldestInvoiceDate: row._min.invoiceDate,
+      });
+    }
+    for (const row of paymentSums) {
+      if (!row.customerId) continue;
+      const existing = balances.get(row.customerId);
+      if (existing) {
+        existing.balance -= row._sum.amount ?? 0;
+      } else {
+        balances.set(row.customerId, {
+          balance: -(row._sum.amount ?? 0),
+          oldestInvoiceDate: null,
+        });
+      }
+    }
+    return balances;
+  }
 
   async getSummary(
     companyId: string,
@@ -24,8 +82,6 @@ export class DashboardService {
     );
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // True only when the caller actually passed a date filter — lets the
-    // frontend decide whether to show "Today" or the literal date range.
     const isCustomRange = !!(dateFrom || dateTo);
 
     const periodStart = dateFrom ? new Date(dateFrom) : startOfToday;
@@ -36,17 +92,16 @@ export class DashboardService {
     const [
       todayPayments,
       paymentModeGroups,
-      customerAgg,
-      customersWithDuesCount,
-      totalCustomers,
+      totalCustomersAsOf,
       newCustomersThisMonth,
       totalProducts,
       lowStockCount,
       outOfStockCount,
       todayInvoiceAgg,
       stockProducts,
+      asOfBalances,
     ] = await Promise.all([
-      // 1) Collection within the period (defaults to "today")
+      // 1) Collection within the period
       this.prisma.payment.aggregate({
         where: { companyId, paymentDate: { gte: periodStart, lte: periodEnd } },
         _sum: { amount: true },
@@ -58,28 +113,24 @@ export class DashboardService {
         where: { companyId, paymentDate: { gte: periodStart, lte: periodEnd } },
         _sum: { amount: true },
       }),
-      // 3) Total outstanding across all customers — SNAPSHOT, not period-scoped
-      this.prisma.customer.aggregate({
-        where: { companyId },
-        _sum: { outstandingBalance: true },
-      }),
-      // 4) How many customers owe money — SNAPSHOT
+      // 3) Total Customers — genuinely date-accurate now: counts customers
+      // who existed by the END of the selected period (createdAt is
+      // immutable, so this is a real historical count, not a live total).
       this.prisma.customer.count({
-        where: { companyId, outstandingBalance: { gt: 0 } },
+        where: { companyId, createdAt: { lte: periodEnd } },
       }),
-      // 5) Total customers — SNAPSHOT
-      this.prisma.customer.count({ where: { companyId } }),
-      // 6) New customers this CALENDAR month — always the real current
-      //    month, regardless of any export range chosen (matches the live
-      //    dashboard's own "+X new this month" label literally)
+      // 4) New customers this CALENDAR month — intentionally NOT
+      // period-scoped, same as before: this always means the real current
+      // month regardless of what range is picked.
       this.prisma.customer.count({
         where: { companyId, createdAt: { gte: startOfMonth } },
       }),
-      // 7) Total active products — SNAPSHOT
+      // 5–7) STILL CURRENT — no stock-movement replay exists yet, so these
+      // three can't be honestly reconstructed for a past date. Flagging
+      // clearly rather than faking a date-scoped number.
       this.prisma.product.count({
         where: { companyId, status: { not: 'ARCHIVED' } },
       }),
-      // 8) Low stock (column vs column → raw SQL) — SNAPSHOT
       this.prisma.$queryRaw<{ count: number }[]>`
         SELECT COUNT(*)::int AS count
         FROM "products"
@@ -87,17 +138,16 @@ export class DashboardService {
           AND "stock" <= "minStock"
           AND "status" <> 'ARCHIVED'
       `,
-      // 9) Out of stock — SNAPSHOT
       this.prisma.product.count({
         where: { companyId, stock: { lte: 0 }, status: { not: 'ARCHIVED' } },
       }),
-      // 10) Billed within the period (defaults to "today")
+      // 8) Billed within the period
       this.prisma.invoice.aggregate({
         where: { companyId, invoiceDate: { gte: periodStart, lte: periodEnd } },
         _sum: { totalAmount: true },
         _count: true,
       }),
-      // 11) Stock rows (lowest first) — SNAPSHOT
+      // 9) Stock rows (lowest first) — still current, same reason as above.
       this.prisma.product.findMany({
         where: { companyId, status: { not: 'ARCHIVED' } },
         orderBy: { stock: 'asc' },
@@ -111,46 +161,65 @@ export class DashboardService {
           unit: true,
         },
       }),
+      // 10) Every customer's balance AS OF periodEnd — the one map that
+      // now drives Total Outstanding, Customers with Dues, the risk
+      // donut, AND the due-customers list, all consistently.
+      this.getAsOfBalances(companyId, periodEnd),
     ]);
 
-    const topCustomers = await this.prisma.customer.findMany({
-      where: { companyId, outstandingBalance: { gt: 0 } },
-      orderBy: { outstandingBalance: 'desc' },
-      take: 5,
-      select: {
-        id: true,
-        customerCode: true,
-        name: true,
-        phone: true,
-        type: true,
-        outstandingBalance: true,
-      },
-    });
+    // ---- Derive outstanding totals + risk buckets from the SAME map ----
+    let totalOutstandingAsOf = 0;
+    let customersWithDuesAsOf = 0;
+    const buckets = { highRisk: 0, medium: 0, recent: 0 };
+    const owingCustomerIds: string[] = [];
 
-    // Step 2: for just those 5 customers, find each one's OLDEST unpaid
-    // invoice due date. groupBy + _min is Prisma's native way to do a
-    // per-group MIN() — no raw SQL, no manual quoting, no LATERAL join.
-    const oldestDueDates = await this.prisma.invoice.groupBy({
-      by: ['customerId'],
-      where: {
-        companyId,
-        customerId: { in: topCustomers.map((c) => c.id) },
-        status: { in: ['CONFIRMED', 'PARTIAL'] },
-      },
-      _min: { dueDate: true },
-    });
+    for (const [customerId, info] of asOfBalances) {
+      if (info.balance <= 0.01) continue;
+      totalOutstandingAsOf += info.balance;
+      customersWithDuesAsOf++;
+      owingCustomerIds.push(customerId);
 
-    // A quick lookup: customerId -> their oldest unpaid due date (if any).
-    const oldestDueByCustomer = new Map(
-      oldestDueDates.map((row) => [row.customerId, row._min.dueDate]),
-    );
+      const overdueDays = info.oldestInvoiceDate
+        ? Math.floor(
+            (periodEnd.getTime() - info.oldestInvoiceDate.getTime()) /
+              86_400_000,
+          )
+        : 0;
+      if (overdueDays > 15) buckets.highRisk += info.balance;
+      else if (overdueDays >= 7) buckets.medium += info.balance;
+      else buckets.recent += info.balance;
+    }
 
-    const dueCustomers: DueCustomerDto[] = topCustomers.map((c) => {
-      const oldestDue = oldestDueByCustomer.get(c.id);
-      const overdueDays = oldestDue
+    // Top 5 by as-of balance, for the "Customers with Dues" panel
+    const topOwingIds = owingCustomerIds
+      .sort(
+        (a, b) => asOfBalances.get(b)!.balance - asOfBalances.get(a)!.balance,
+      )
+      .slice(0, 5);
+
+    const topCustomerRecords = topOwingIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: topOwingIds }, companyId },
+          select: {
+            id: true,
+            customerCode: true,
+            name: true,
+            phone: true,
+            type: true,
+          },
+        })
+      : [];
+
+    const dueCustomers: DueCustomerDto[] = topOwingIds.map((id) => {
+      const c = topCustomerRecords.find((r) => r.id === id)!;
+      const info = asOfBalances.get(id)!;
+      const overdueDays = info.oldestInvoiceDate
         ? Math.max(
             0,
-            Math.ceil((now.getTime() - oldestDue.getTime()) / 86_400_000),
+            Math.floor(
+              (periodEnd.getTime() - info.oldestInvoiceDate.getTime()) /
+                86_400_000,
+            ),
           )
         : 0;
       return {
@@ -159,46 +228,12 @@ export class DashboardService {
         customerCode: c.customerCode,
         type: c.type,
         phone: c.phone,
-        outstandingBalance: c.outstandingBalance,
+        outstandingBalance: info.balance,
         overdueDays,
       };
     });
 
-    const riskRows = await this.prisma.$queryRaw<
-      {
-        bucket: string;
-        total: number;
-      }[]
-    >`
-    SELECT
-      CASE
-        WHEN oldest.min_invoice_date < NOW() - INTERVAL '15 days'
-          THEN 'highRisk'
-        WHEN oldest.min_invoice_date < NOW() - INTERVAL '7 days'
-          THEN 'medium'
-        ELSE 'recent'
-      END AS bucket,
-      SUM(c."outstandingBalance") AS total
-    FROM "customers" c
-    JOIN LATERAL (
-      SELECT MIN(i."invoiceDate") AS min_invoice_date
-      FROM "invoices" i
-      WHERE i."customerId" = c."id"
-        AND i."status" IN ('CONFIRMED', 'PARTIAL')
-    ) oldest ON true
-    WHERE c."companyId" = ${companyId}
-      AND c."outstandingBalance" > 0
-    GROUP BY bucket
-  `;
-    const buckets = { highRisk: 0, medium: 0, recent: 0 };
-    for (const row of riskRows) {
-      const val = Number(row.total) || 0;
-      if (row.bucket === 'highRisk') buckets.highRisk = val;
-      else if (row.bucket === 'medium') buckets.medium = val;
-      else buckets.recent = val;
-    }
-
-    // ---- Shape into the DTO (field names match the frontend) ----
+    // ---- Shape into the DTO ----
     const paymentMode: PaymentModeSliceDto[] = paymentModeGroups.map((g) => ({
       name: g.paymentMode,
       value: g._sum.amount ?? 0,
@@ -215,21 +250,17 @@ export class DashboardService {
 
     return {
       kpis: {
-        // Names match the `DashboardKPIs` interface in Dashboardkpicards.tsx
-        totalCustomers,
+        totalCustomers: totalCustomersAsOf,
         newThisMonth: newCustomersThisMonth,
-        totalOutstanding: customerAgg._sum.outstandingBalance ?? 0,
-        customersWithDues: customersWithDuesCount,
+        totalOutstanding: totalOutstandingAsOf,
+        customersWithDues: customersWithDuesAsOf,
         todayCollection: todayPayments._sum.amount ?? 0,
         todayInvoices: todayInvoiceAgg._count,
         totalBilled: todayInvoiceAgg._sum.totalAmount ?? 0,
         totalProducts,
         lowStockCount: Number(lowStockCount[0]?.count ?? 0),
-        outOfStockCount: outOfStockCount,
+        outOfStockCount,
       },
-      // Echoes back exactly what date range this response covers, so the
-      // frontend can show "Today" for the default view vs the real dates
-      // once the user picks a custom range — see DashboardPage.tsx.
       period: {
         from: periodStart.toISOString().slice(0, 10),
         to: periodEnd.toISOString().slice(0, 10),
