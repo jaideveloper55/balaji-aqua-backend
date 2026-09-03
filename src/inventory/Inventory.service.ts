@@ -168,39 +168,6 @@ export class InventoryService {
       const product = await this.lockProduct(tx, dto.productId, companyId);
       const newStock = product.stock + dto.quantity;
 
-      const isProduction = dto.source === MovementSource.PRODUCTION;
-
-      const rawRequired = isProduction
-        ? await this.explodeBom(tx, product.id, dto.quantity, companyId)
-        : new Map<string, number>();
-
-      if (rawRequired.size > 0) {
-        const components = await tx.product.findMany({
-          where: { id: { in: [...rawRequired.keys()] }, companyId },
-          select: {
-            id: true,
-            name: true,
-            sku: true,
-            unit: true,
-            stock: true,
-            reserved: true,
-          },
-        });
-
-        for (const comp of components) {
-          const needed = rawRequired.get(comp.id)!;
-          const available = comp.stock - comp.reserved;
-          if (available < needed) {
-            throw new BadRequestException(
-              `Cannot produce ${dto.quantity} ${product.unit} of "${product.name}". ` +
-                `Insufficient raw material "${comp.name}" (${comp.sku}): ` +
-                `need ${needed} ${comp.unit}, only ${available} available.`,
-            );
-          }
-        }
-      }
-
-      // Increase the finished good and re-derive its status
       await tx.product.update({
         where: { id: product.id },
         data: {
@@ -226,60 +193,14 @@ export class InventoryService {
         },
       });
 
-      // Consume the raw materials this production run used up
-      const consumed: Array<{ id: string; name: string; qty: number }> = [];
-
-      for (const [componentId, qty] of rawRequired) {
-        const before = await tx.product.findUniqueOrThrow({
-          where: { id: componentId },
-          select: { stock: true, status: true },
-        });
-        const componentNewStock = before.stock - qty;
-
-        const updated = await tx.product.update({
-          where: { id: componentId },
-          data: {
-            stock: componentNewStock,
-            status: this.deriveProductStatus(componentNewStock, before.status),
-          },
-          select: { id: true, name: true, sku: true, unit: true, stock: true },
-        });
-
-        await tx.stockMovement.create({
-          data: {
-            productId: updated.id,
-            productName: updated.name,
-            sku: updated.sku,
-            unit: updated.unit,
-            type: MovementType.STOCK_OUT,
-            source: MovementSource.BOM_CONSUMED,
-            quantity: -qty,
-            balanceAfter: updated.stock,
-            referenceId: dto.referenceId,
-            remarks:
-              `Consumed producing ${dto.quantity} ${product.unit} of ` +
-              `${product.name} (${product.sku})`,
-            createdById: userId,
-            companyId,
-          },
-        });
-
-        consumed.push({ id: updated.id, name: updated.name, qty });
-      }
-
       return {
         movement,
         product: { id: product.id, stock: newStock },
-        consumed,
+        consumed: [] as Array<{ id: string; name: string; qty: number }>,
       };
     });
 
-    // Alerts fire AFTER commit — stock is now durable in the DB
     void this.checkAndNotifyStock(dto.productId, companyId);
-    for (const c of result.consumed) {
-      void this.checkAndNotifyStock(c.id, companyId);
-    }
-
     return result;
   }
 
@@ -601,5 +522,137 @@ export class InventoryService {
       inwardToday,
       outwardToday,
     };
+  }
+
+  // ─── BOM CONSUME
+
+  async consumeBomComponents(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    quantity: number,
+    companyId: string,
+    userId: string,
+    referenceId?: string,
+  ): Promise<Array<{ id: string; name: string; qty: number }>> {
+    const required = await this.explodeBom(tx, productId, quantity, companyId);
+    if (required.size === 0) return [];
+
+    const product = await tx.product.findUniqueOrThrow({
+      where: { id: productId },
+      select: { name: true, sku: true, unit: true },
+    });
+
+    const components = await tx.product.findMany({
+      where: { id: { in: [...required.keys()] }, companyId }, // tenant isolation
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        unit: true,
+        stock: true,
+        reserved: true,
+      },
+    });
+
+    // Check EVERY ingredient before touching any — no half-consumed recipes.
+    for (const comp of components) {
+      const needed = required.get(comp.id)!;
+      const available = comp.stock - comp.reserved;
+      if (available < needed) {
+        throw new BadRequestException(
+          `Cannot sell ${quantity} ${product.unit} of "${product.name}". ` +
+            `Insufficient "${comp.name}" (${comp.sku}): need ${needed} ${comp.unit}, only ${available} available.`,
+        );
+      }
+    }
+
+    const consumed: Array<{ id: string; name: string; qty: number }> = [];
+    for (const [componentId, qty] of required) {
+      const before = await tx.product.findUniqueOrThrow({
+        where: { id: componentId },
+        select: { stock: true, status: true },
+      });
+      const newStock = before.stock - qty;
+
+      const updated = await tx.product.update({
+        where: { id: componentId },
+        data: {
+          stock: newStock,
+          status: this.deriveProductStatus(newStock, before.status),
+        },
+        select: { id: true, name: true, sku: true, unit: true, stock: true },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          productId: updated.id,
+          productName: updated.name,
+          sku: updated.sku,
+          unit: updated.unit,
+          type: MovementType.STOCK_OUT,
+          source: MovementSource.BOM_CONSUMED,
+          quantity: -qty,
+          balanceAfter: updated.stock,
+          referenceId,
+          remarks: `Consumed selling ${quantity} ${product.unit} of ${product.name} (${product.sku})`,
+          createdById: userId,
+          companyId,
+        },
+      });
+
+      consumed.push({ id: updated.id, name: updated.name, qty });
+    }
+    return consumed;
+  }
+
+  // ─── BOM RESTORE — mirror image, for cancelled/deleted invoices ───
+  async restoreBomComponents(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    quantity: number,
+    companyId: string,
+    userId: string,
+    referenceId?: string,
+  ): Promise<Array<{ id: string; name: string; qty: number }>> {
+    const required = await this.explodeBom(tx, productId, quantity, companyId);
+    if (required.size === 0) return [];
+
+    const restored: Array<{ id: string; name: string; qty: number }> = [];
+    for (const [componentId, qty] of required) {
+      const before = await tx.product.findUniqueOrThrow({
+        where: { id: componentId },
+        select: { stock: true, status: true },
+      });
+      const newStock = before.stock + qty;
+
+      const updated = await tx.product.update({
+        where: { id: componentId },
+        data: {
+          stock: newStock,
+          status: this.deriveProductStatus(newStock, before.status),
+        },
+        select: { id: true, name: true, sku: true, unit: true, stock: true },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          productId: updated.id,
+          productName: updated.name,
+          sku: updated.sku,
+          unit: updated.unit,
+          type: MovementType.STOCK_IN,
+          source: MovementSource.CUSTOMER_RETURN,
+          quantity: qty,
+          balanceAfter: updated.stock,
+          referenceId,
+          remarks: `Restored — sale of ${quantity} unit(s) reversed`,
+          createdById: userId,
+          companyId,
+        },
+      });
+
+      restored.push({ id: updated.id, name: updated.name, qty });
+    }
+    return restored;
   }
 }

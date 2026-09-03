@@ -21,12 +21,12 @@ import {
   InvoiceType,
   MovementSource,
   MovementType,
-  PaymentMode,
   Prisma,
   ProductStatus,
 } from '@prisma/client';
 import { NotificationService } from 'src/notifications/notification.service';
 import { CorrectInvoiceDto } from './dto/update-invoice.dto';
+import { InventoryService } from 'src/inventory/Inventory.service';
 
 interface ProcessedItem {
   productId: string;
@@ -59,6 +59,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   // ─── HELPER: Generate Invoice Number ─────────────────────────────────────
@@ -365,7 +366,7 @@ export class BillingService {
         });
       }
 
-      // ─── STOCK: finished goods only ───
+      // ─── STOCK: finished goods ───
 
       for (const item of processedItems) {
         const p = productMap.get(item.productId)!;
@@ -403,6 +404,19 @@ export class BillingService {
             companyId,
           },
         });
+      }
+
+      // ─── STOCK: raw materials (BOM) ───
+
+      for (const item of processedItems) {
+        await this.inventoryService.consumeBomComponents(
+          tx,
+          item.productId,
+          item.quantity,
+          companyId,
+          userId,
+          invoiceNumber,
+        );
       }
 
       return newInvoice;
@@ -590,10 +604,9 @@ export class BillingService {
     return invoice;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
   // 4. CANCEL INVOICE
-  // ─────────────────────────────────────────────────────────────────────────
-  async cancelInvoice(id: string, companyId: string) {
+
+  async cancelInvoice(id: string, companyId: string, userId: string) {
     const invoice: Invoice | null = await this.prisma.invoice.findFirst({
       where: { id, companyId },
     });
@@ -638,11 +651,10 @@ export class BillingService {
           },
         });
       }
-
       const items = await tx.invoiceItem.findMany({ where: { invoiceId: id } });
 
-      // Restore finished goods only. Raw materials stay consumed — cancelling
-      // a sale puts the bottles back on the shelf but doesn't un-make them.
+      // Restore both the finished good AND the raw materials it consumed —
+      // the sale is being fully undone, so everything reverses.
       for (const item of items) {
         const current = await tx.product.findUniqueOrThrow({
           where: { id: item.productId },
@@ -663,6 +675,15 @@ export class BillingService {
                   : ProductStatus.ACTIVE,
           },
         });
+
+        await this.inventoryService.restoreBomComponents(
+          tx,
+          item.productId,
+          item.quantity,
+          companyId,
+          userId,
+          invoice.invoiceNumber,
+        );
       }
     });
 
@@ -1226,6 +1247,15 @@ export class BillingService {
             createdById: userId,
           },
         });
+
+        await this.inventoryService.restoreBomComponents(
+          tx,
+          item.productId,
+          item.quantity,
+          companyId,
+          userId,
+          invoice.invoiceNumber,
+        );
       }
 
       // Roll back the customer's outstanding balance.

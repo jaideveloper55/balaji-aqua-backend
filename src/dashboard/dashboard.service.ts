@@ -24,6 +24,10 @@ export class DashboardService {
     );
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    // True only when the caller actually passed a date filter — lets the
+    // frontend decide whether to show "Today" or the literal date range.
+    const isCustomRange = !!(dateFrom || dateTo);
+
     const periodStart = dateFrom ? new Date(dateFrom) : startOfToday;
     const periodEnd = dateTo
       ? new Date(new Date(dateTo).getTime() + 24 * 60 * 60 * 1000 - 1)
@@ -160,30 +164,32 @@ export class DashboardService {
       };
     });
 
-    // Outstanding-by-risk buckets (age of oldest unpaid invoice per customer)
-
     const riskRows = await this.prisma.$queryRaw<
-      { bucket: string; total: number }[]
+      {
+        bucket: string;
+        total: number;
+      }[]
     >`
-      SELECT
-        CASE
-          WHEN oldest.min_due < NOW() - INTERVAL '15 days' THEN 'highRisk'
-          WHEN oldest.min_due < NOW()                      THEN 'medium'
-          ELSE 'recent'
-        END AS bucket,
-        SUM(c."outstandingBalance") AS total
-      FROM "customers" c
-      JOIN LATERAL (
-        SELECT MIN(i."dueDate") AS min_due
-        FROM "invoices" i
-        WHERE i."customerId" = c."id"
-          AND i."status" IN ('CONFIRMED', 'PARTIAL')
-      ) oldest ON true
-      WHERE c."companyId" = ${companyId}
-        AND c."outstandingBalance" > 0
-      GROUP BY bucket
-    `;
-
+    SELECT
+      CASE
+        WHEN oldest.min_invoice_date < NOW() - INTERVAL '15 days'
+          THEN 'highRisk'
+        WHEN oldest.min_invoice_date < NOW() - INTERVAL '7 days'
+          THEN 'medium'
+        ELSE 'recent'
+      END AS bucket,
+      SUM(c."outstandingBalance") AS total
+    FROM "customers" c
+    JOIN LATERAL (
+      SELECT MIN(i."invoiceDate") AS min_invoice_date
+      FROM "invoices" i
+      WHERE i."customerId" = c."id"
+        AND i."status" IN ('CONFIRMED', 'PARTIAL')
+    ) oldest ON true
+    WHERE c."companyId" = ${companyId}
+      AND c."outstandingBalance" > 0
+    GROUP BY bucket
+  `;
     const buckets = { highRisk: 0, medium: 0, recent: 0 };
     for (const row of riskRows) {
       const val = Number(row.total) || 0;
@@ -220,6 +226,14 @@ export class DashboardService {
         totalProducts,
         lowStockCount: Number(lowStockCount[0]?.count ?? 0),
         outOfStockCount: outOfStockCount,
+      },
+      // Echoes back exactly what date range this response covers, so the
+      // frontend can show "Today" for the default view vs the real dates
+      // once the user picks a custom range — see DashboardPage.tsx.
+      period: {
+        from: periodStart.toISOString().slice(0, 10),
+        to: periodEnd.toISOString().slice(0, 10),
+        isCustomRange,
       },
       paymentMode,
       buckets,

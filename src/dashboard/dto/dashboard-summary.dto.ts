@@ -160,10 +160,38 @@ export class StockRowDto {
   unit: string;
 }
 
+// --- The date range actually applied to this response, echoed back so ---
+// --- the frontend can label cards correctly ("Today" vs "Aug 1 – Aug 15") ---
+export class DashboardPeriodDto {
+  @ApiProperty({
+    example: '2026-09-01',
+    description: 'Start date actually used for this response (YYYY-MM-DD)',
+  })
+  from: string;
+
+  @ApiProperty({
+    example: '2026-09-01',
+    description: 'End date actually used for this response (YYYY-MM-DD)',
+  })
+  to: string;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'True when the caller supplied dateFrom/dateTo. False means this is ' +
+      'the default live "today" view — the frontend should show "Today" ' +
+      'labels rather than the literal date range.',
+  })
+  isCustomRange: boolean;
+}
+
 // --- The whole payload returned by GET /dashboard/summary ---
 export class DashboardSummaryDto {
   @ApiProperty({ type: DashboardKpisDto })
   kpis: DashboardKpisDto;
+
+  @ApiProperty({ type: DashboardPeriodDto })
+  period: DashboardPeriodDto;
 
   @ApiProperty({ type: [PaymentModeSliceDto] })
   paymentMode: PaymentModeSliceDto[];

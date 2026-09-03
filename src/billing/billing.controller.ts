@@ -177,13 +177,14 @@ export class BillingController {
   @ApiOperation({
     summary: 'Cancel an invoice',
     description:
-      'Cancels a confirmed/partial invoice. Restores stock and reverses customer outstanding. Cannot cancel PAID invoices.',
+      'Cancels a confirmed/partial invoice. Restores stock (including raw materials) and reverses customer outstanding. Cannot cancel PAID invoices.',
   })
   async cancelInvoice(
     @Param('id') id: string,
+    @CurrentUser() user: JwtUser,
     @CurrentCompany() companyId: string,
   ) {
-    return this.billingService.cancelInvoice(id, companyId);
+    return this.billingService.cancelInvoice(id, companyId, user.sub);
   }
 
   @Delete('invoices/:id')

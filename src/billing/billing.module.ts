@@ -9,9 +9,10 @@ import { ExportService } from './export.service';
 import { ScheduleModule } from '@nestjs/schedule';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PdfHelper } from './pdf.helper';
+import { InventoryModule } from '../inventory/Inventory.module';
 
 @Module({
-  imports: [PrismaModule, ScheduleModule, NotificationsModule],
+  imports: [PrismaModule, ScheduleModule, NotificationsModule, InventoryModule],
   controllers: [BillingController, CartController, ExportController],
   providers: [BillingService, CartService, ExportService, PdfHelper],
   exports: [BillingService],
