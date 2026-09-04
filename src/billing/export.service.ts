@@ -164,13 +164,15 @@ export class ExportService {
     }
 
     const columns: PdfColumn[] = [
-      { header: 'Code', width: 60 },
-      { header: 'Name', width: 150 },
+      { header: 'Invoice No', width: 90 },
+      { header: 'Date', width: 60 },
+      { header: 'Customer', width: 130 },
       { header: 'Phone', width: 90 },
-      { header: 'Type', width: 70, align: 'center' },
-      { header: 'Outstanding', width: 75, align: 'right', isCurrency: true },
-      { header: 'Days', width: 45, align: 'center' },
-      { header: 'Risk', width: 70, align: 'center', isStatus: true },
+      { header: 'Total', width: 75, align: 'right', isCurrency: true },
+      { header: 'Paid', width: 75, align: 'right', isCurrency: true },
+      { header: 'Balance', width: 75, align: 'right', isCurrency: true },
+      { header: 'Status', width: 75, align: 'center', isStatus: true },
+      { header: 'Mode', width: 80, align: 'center' },
     ];
 
     const rows: (string | number)[][] = invoices.map((inv) => [
