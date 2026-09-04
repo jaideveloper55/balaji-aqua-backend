@@ -486,6 +486,11 @@ export class BillingService {
       ];
     }
 
+    const statsWhere: Prisma.InvoiceWhereInput = { companyId };
+    if (filters.customerId) statsWhere.customerId = filters.customerId;
+    if (where.invoiceDate) statsWhere.invoiceDate = where.invoiceDate;
+    if (where.OR) statsWhere.OR = where.OR;
+
     const [
       total,
       invoices,
@@ -497,6 +502,7 @@ export class BillingService {
       totalAllCount,
     ] = await Promise.all([
       this.prisma.invoice.count({ where }),
+
       this.prisma.invoice.findMany({
         where,
         skip,
@@ -523,28 +529,28 @@ export class BillingService {
         },
       }),
       this.prisma.invoice.count({
-        where: { companyId, status: InvoiceStatus.PAID },
+        where: { ...statsWhere, status: InvoiceStatus.PAID },
       }),
       this.prisma.invoice.count({
-        where: { companyId, status: InvoiceStatus.CONFIRMED },
+        where: { ...statsWhere, status: InvoiceStatus.CONFIRMED },
       }),
       this.prisma.invoice.count({
-        where: { companyId, status: InvoiceStatus.PARTIAL },
+        where: { ...statsWhere, status: InvoiceStatus.PARTIAL },
       }),
       this.prisma.invoice.count({
         where: {
-          companyId,
+          ...statsWhere,
           balanceDue: { gt: 0 },
           dueDate: { lt: now },
           status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
         },
       }),
       this.prisma.invoice.aggregate({
-        where: { companyId, status: { not: InvoiceStatus.CANCELLED } },
+        where: { ...statsWhere, status: { not: InvoiceStatus.CANCELLED } },
         _sum: { totalAmount: true, balanceDue: true, paidAmount: true },
       }),
       this.prisma.invoice.count({
-        where: { companyId, status: { not: InvoiceStatus.CANCELLED } },
+        where: { ...statsWhere, status: { not: InvoiceStatus.CANCELLED } },
       }),
     ]);
 
