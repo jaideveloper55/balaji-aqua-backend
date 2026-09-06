@@ -946,6 +946,9 @@ model EventOrder {
   status        EventOrderStatus   @default(DRAFT)
   paymentStatus EventPaymentStatus @default(UNPAID)
 
+
+  reservationReleased Boolean @default(false)
+
  // Cancellation
   cancellationReason EventCancellationReason?
   cancellationNote   String?

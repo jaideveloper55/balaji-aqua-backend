@@ -163,13 +163,7 @@ export class EventOrdersController {
   }
 
   // ─── DELETE (SUPER_ADMIN only, hard delete) ───────────────────────────
-  // This is the ONLY delete route on this controller. A previous version
-  // had a second `@Delete(':id')` (a leftover `remove()` handler open to
-  // ADMIN as well as SUPER_ADMIN) sitting on the exact same path — NestJS
-  // silently only ever runs the first-registered handler for a duplicate
-  // route, so that second one was permanently dead code, and worse, the
-  // FIRST one (the ADMIN-permissive one) was the one actually executing on
-  // every request. Do not add a second delete route back here.
+
   @Delete(':id')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({
