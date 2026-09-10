@@ -215,6 +215,7 @@ export class EventOrdersService {
           items: {
             select: {
               id: true,
+              productId: true,
               productName: true,
               quantity: true,
               unitPrice: true,
