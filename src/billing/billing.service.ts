@@ -408,17 +408,6 @@ export class BillingService {
 
       // ─── STOCK: raw materials (BOM) ───
 
-      for (const item of processedItems) {
-        await this.inventoryService.consumeBomComponents(
-          tx,
-          item.productId,
-          item.quantity,
-          companyId,
-          userId,
-          invoiceNumber,
-        );
-      }
-
       return newInvoice;
     };
 
@@ -659,8 +648,9 @@ export class BillingService {
       }
       const items = await tx.invoiceItem.findMany({ where: { invoiceId: id } });
 
-      // Restore both the finished good AND the raw materials it consumed —
-      // the sale is being fully undone, so everything reverses.
+      // Only the finished good's own stock is restored here — raw
+      // materials are no longer touched at sale time, so there's
+      // nothing to reverse on that side when a sale is cancelled.
       for (const item of items) {
         const current = await tx.product.findUniqueOrThrow({
           where: { id: item.productId },
@@ -681,15 +671,6 @@ export class BillingService {
                   : ProductStatus.ACTIVE,
           },
         });
-
-        await this.inventoryService.restoreBomComponents(
-          tx,
-          item.productId,
-          item.quantity,
-          companyId,
-          userId,
-          invoice.invoiceNumber,
-        );
       }
     });
 
@@ -1253,15 +1234,6 @@ export class BillingService {
             createdById: userId,
           },
         });
-
-        await this.inventoryService.restoreBomComponents(
-          tx,
-          item.productId,
-          item.quantity,
-          companyId,
-          userId,
-          invoice.invoiceNumber,
-        );
       }
 
       // Roll back the customer's outstanding balance.

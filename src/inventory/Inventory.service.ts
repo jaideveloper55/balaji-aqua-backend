@@ -193,10 +193,22 @@ export class InventoryService {
         },
       });
 
+      let consumed: Array<{ id: string; name: string; qty: number }> = [];
+      if (dto.source === MovementSource.PRODUCTION) {
+        consumed = await this.consumeBomComponents(
+          tx,
+          product.id,
+          dto.quantity,
+          companyId,
+          userId,
+          dto.referenceId,
+        );
+      }
+
       return {
         movement,
         product: { id: product.id, stock: newStock },
-        consumed: [] as Array<{ id: string; name: string; qty: number }>,
+        consumed,
       };
     });
 
