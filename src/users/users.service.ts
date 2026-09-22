@@ -300,9 +300,6 @@ export class UsersService {
       return userUpdate;
     });
 
-    this.logger.log(
-      `✅ User updated: ${updated.email} by ${currentUser.email}`,
-    );
     return this.findOne(id, currentUser);
   }
 
@@ -346,9 +343,6 @@ export class UsersService {
       data: { password: hashed, refreshToken: null },
     });
 
-    this.logger.log(
-      `✅ Password changed: ${user.email} by ${currentUser.email}`,
-    );
     return { message: 'Password changed successfully. Please login again.' };
   }
 
@@ -370,9 +364,39 @@ export class UsersService {
       data: { isActive: false, refreshToken: null },
     });
 
-    this.logger.log(
-      `⚠️  User deactivated: ${user.email} by ${currentUser.email}`,
-    );
     return { message: `User ${user.email} deactivated successfully` };
+  }
+
+  async hardDelete(id: string, currentUser: JwtPayload) {
+    const user = await this.findOne(id, currentUser);
+
+    if (id === currentUser.sub) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+    if (user.role === Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Cannot delete SUPER_ADMIN');
+    }
+
+    const [invoices, payments, stockMovements, eventOrders, eventPayments] =
+      await Promise.all([
+        this.prisma.invoice.count({ where: { createdById: id } }),
+        this.prisma.payment.count({ where: { createdById: id } }),
+        this.prisma.stockMovement.count({ where: { createdById: id } }),
+        this.prisma.eventOrder.count({ where: { createdById: id } }),
+        this.prisma.eventOrderPayment.count({ where: { createdById: id } }),
+      ]);
+
+    const totalLinked =
+      invoices + payments + stockMovements + eventOrders + eventPayments;
+    if (totalLinked > 0) {
+      throw new ConflictException(
+        `Cannot permanently delete this user — they have ${totalLinked} linked ` +
+          `record(s). Deactivate them instead to preserve that history.`,
+      );
+    }
+
+    await this.prisma.user.delete({ where: { id } });
+
+    return { message: `User ${user.email} permanently deleted` };
   }
 }

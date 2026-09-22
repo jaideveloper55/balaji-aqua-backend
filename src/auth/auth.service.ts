@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Role } from '@prisma/client';
+import { Role, MenuKey } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
@@ -86,6 +86,13 @@ export class AuthService {
     });
 
     await this.storeRefreshToken(user.id, tokens.refreshToken);
+
+    // Menu items this role can see — SidebarNav and ProtectedRoute (frontend)
+    // both filter against this list. SUPER_ADMIN always gets every key,
+    // matching the same unconditional rule UamService.getRolePermissions()
+    // already enforces server-side.
+    const enabledMenuKeys = await this.getEnabledMenuKeys(user.role);
+
     this.logger.log(
       `✅ Logged in: ${user.email} — ${companies.length} company access`,
     );
@@ -101,6 +108,7 @@ export class AuthService {
       },
       companies, // for TenantSelector
       activeCompanyId: activeCompany.id,
+      enabledMenuKeys,
       ...tokens,
     };
   }
@@ -129,13 +137,13 @@ export class AuthService {
   }
 
   // ─── LOGOUT ───────────────────────────────────────────────────────────────
-  // Wipe refreshToken from DB → next refresh attempt fails → forces re-login.
+
   async logout(userId: string) {
     await this.prisma.user.update({
       where: { id: userId },
       data: { refreshToken: null },
     });
-    this.logger.log(`✅ Logged out: ${userId}`);
+
     return { message: 'Logged out successfully' };
   }
 
@@ -176,6 +184,8 @@ export class AuthService {
       .map((uc) => uc.company)
       .filter((c) => c.isActive);
 
+    const enabledMenuKeys = await this.getEnabledMenuKeys(user.role);
+
     return {
       id: user.id,
       email: user.email,
@@ -186,6 +196,7 @@ export class AuthService {
       isActive: user.isActive,
       createdAt: user.createdAt,
       companies,
+      enabledMenuKeys,
     };
   }
 
@@ -323,5 +334,16 @@ export class AuthService {
       where: { id: userId },
       data: { refreshToken: hashed },
     });
+  }
+
+  private async getEnabledMenuKeys(role: Role): Promise<MenuKey[]> {
+    if (role === Role.SUPER_ADMIN) {
+      return Object.values(MenuKey);
+    }
+    const saved = await this.prisma.roleMenuPermission.findMany({
+      where: { role, isEnabled: true },
+      select: { menuKey: true },
+    });
+    return saved.map((row) => row.menuKey);
   }
 }

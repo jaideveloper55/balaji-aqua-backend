@@ -108,11 +108,18 @@ export class UsersController {
     return this.usersService.changePassword(id, dto, user);
   }
 
-  @Delete(':id')
-  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @Delete(':id/permanent')
+  @Roles(Role.SUPER_ADMIN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Deactivate user (soft delete)' })
-  deactivate(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
-    return this.usersService.deactivate(id, user);
+  @ApiOperation({
+    summary: 'Permanently delete a user (only if they have no linked records)',
+  })
+  @ApiResponse({ status: 200, description: 'User permanently deleted.' })
+  @ApiResponse({
+    status: 409,
+    description: 'User has linked records — deactivate instead.',
+  })
+  hardDelete(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.usersService.hardDelete(id, user);
   }
 }

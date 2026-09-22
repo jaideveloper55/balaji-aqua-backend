@@ -231,6 +231,43 @@ export class BillingService {
     );
   }
 
+  private async getLedgerBalances(
+    companyId: string,
+    customerIds: string[],
+    cutoff: Date,
+    strict: boolean,
+  ): Promise<Map<string, number>> {
+    if (customerIds.length === 0) return new Map();
+
+    const rows = strict
+      ? await this.prisma.$queryRaw<
+          Array<{ customerId: string; balance: number }>
+        >`
+          SELECT DISTINCT ON (cl."customerId") cl."customerId", cl.balance
+          FROM customer_ledger cl
+          WHERE cl."companyId" = ${companyId}
+            AND cl."customerId" = ANY(${customerIds}::text[])
+            AND cl."entryDate" < ${cutoff}
+          ORDER BY cl."customerId", cl."entryDate" DESC, cl."createdAt" DESC
+        `
+      : await this.prisma.$queryRaw<
+          Array<{ customerId: string; balance: number }>
+        >`
+          SELECT DISTINCT ON (cl."customerId") cl."customerId", cl.balance
+          FROM customer_ledger cl
+          WHERE cl."companyId" = ${companyId}
+            AND cl."customerId" = ANY(${customerIds}::text[])
+            AND cl."entryDate" <= ${cutoff}
+          ORDER BY cl."customerId", cl."entryDate" DESC, cl."createdAt" DESC
+        `;
+
+    const map = new Map<string, number>();
+    for (const row of rows) map.set(row.customerId, Number(row.balance));
+    return map;
+  }
+
+
+
   // CREATE INVOICE
 
   async createInvoice(

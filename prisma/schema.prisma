@@ -102,6 +102,7 @@ model Company {
   isActive  Boolean     @default(true)
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
+  users User[]
 
   userCompanies         UserCompany[]
   customers             Customer[]
@@ -137,6 +138,8 @@ model User {
   city         String?
   isActive     Boolean @default(true)
   refreshToken String?
+  companyId  String? 
+  company   Company? @relation(fields: [companyId], references: [id]) 
 
   userCompanies UserCompany[]
   invoices      Invoice[]     @relation("InvoiceCreatedBy")
@@ -149,6 +152,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   @@index([email])
+  @@index([companyId, role])
   @@map("users")
   EventOrder EventOrder[] @relation("EventOrderCreatedBy")
   EventOrderPayment EventOrderPayment[] @relation("EventPaymentCreatedBy")
@@ -1037,4 +1041,31 @@ createdAt DateTime @default(now())
 @@index([eventOrderId])
 @@map("event_order_payments")
 
+}
+
+
+
+model RoleMenuPermission {
+  id        String   @id @default(cuid())
+  role      Role
+  menuKey   MenuKey
+  isEnabled Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([role, menuKey])  
+  @@map("role_menu_permissions")
+}
+
+
+
+enum MenuKey {
+  DASHBOARD
+  CUSTOMER_MANAGEMENT
+  PRODUCT_MANAGEMENT
+  BILLING_POS
+  EVENT_ORDERS
+  INVENTORY
+  EXPENSES
 }
