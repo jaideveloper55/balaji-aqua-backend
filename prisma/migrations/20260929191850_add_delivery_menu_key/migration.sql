@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "MenuKey" ADD VALUE 'DELIVERY';

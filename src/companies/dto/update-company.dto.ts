@@ -8,9 +8,6 @@ import {
   MaxLength,
 } from 'class-validator';
 
-// Note: `type` (WATER_PLANT vs BEVERAGE) is intentionally NOT editable.
-// It's a fundamental property set at company creation time. Changing it
-// would corrupt historical data (orders, customers tagged to that type).
 export class UpdateCompanyDto {
   @ApiPropertyOptional({ example: 'Sri Balaji Aqua Water Pvt Ltd' })
   @IsOptional()

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNumber, Min, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNumber, Min, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PaymentMode } from '@prisma/client';
 
 export class RecordEventPaymentDto {
@@ -15,6 +15,7 @@ export class RecordEventPaymentDto {
   @ApiProperty({ required: false, example: 'UPI-REF-123456' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   referenceId?: string;
 
   @ApiProperty({ required: false })

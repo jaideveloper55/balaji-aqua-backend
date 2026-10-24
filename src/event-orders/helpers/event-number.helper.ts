@@ -1,26 +1,25 @@
-import { PrismaService } from '../../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+
+// The client inside a transaction (tx). The normal this.prisma also fits
+// this type, so both call styles work.
+type Db = Prisma.TransactionClient;
 
 export async function generateEventNumber(
-  prisma: PrismaService,
+  db: Db,
   companyId: string,
   date: Date = new Date(),
 ): Promise<string> {
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const dd = String(date.getDate()).padStart(2, '0');
-  const datePrefix = `${yyyy}${mm}${dd}`;
-  const eventNumberPrefix = `EVT-${datePrefix}-`;
+  const eventNumberPrefix = `EVT-${yyyy}${mm}${dd}-`;
 
-  const lastEvent = await prisma.eventOrder.findFirst({
-    where: {
-      companyId,
-      eventNumber: { startsWith: eventNumberPrefix },
-    },
+  const lastEvent = await db.eventOrder.findFirst({
+    where: { companyId, eventNumber: { startsWith: eventNumberPrefix } },
     orderBy: { eventNumber: 'desc' },
     select: { eventNumber: true },
   });
 
-  // Extract the counter (last 3 digits) and increment
   let nextCounter = 1;
   if (lastEvent) {
     const lastCounter = parseInt(
@@ -30,14 +29,12 @@ export async function generateEventNumber(
     nextCounter = lastCounter + 1;
   }
 
-  // Pad to 3 digits: 5 -> "005", 42 -> "042"
   return `${eventNumberPrefix}${String(nextCounter).padStart(3, '0')}`;
 }
 
-//  Same logic but for payment numbers: EVT-PAY-20260503-001
-
+// Payment numbers look like EVT-PAY-20260503-001
 export async function generateEventPaymentNumber(
-  prisma: PrismaService,
+  db: Db,
   companyId: string,
   date: Date = new Date(),
 ): Promise<string> {
@@ -46,11 +43,8 @@ export async function generateEventPaymentNumber(
   const dd = String(date.getDate()).padStart(2, '0');
   const prefix = `EVT-PAY-${yyyy}${mm}${dd}-`;
 
-  const lastPayment = await prisma.eventOrderPayment.findFirst({
-    where: {
-      companyId,
-      paymentNumber: { startsWith: prefix },
-    },
+  const lastPayment = await db.eventOrderPayment.findFirst({
+    where: { companyId, paymentNumber: { startsWith: prefix } },
     orderBy: { paymentNumber: 'desc' },
     select: { paymentNumber: true },
   });

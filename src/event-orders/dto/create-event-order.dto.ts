@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { EventType } from '@prisma/client';
+import { EventType, PaymentMode } from '@prisma/client';
 import {
   ArrayMinSize,
   IsArray,
@@ -12,6 +12,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -176,13 +177,27 @@ export class CreateEventOrderDto {
   securityDeposit?: number;
 
   @ApiProperty({
-    example: 'Cash',
+    enum: PaymentMode,
+    example: PaymentMode.CASH,
     required: false,
-    description: 'Payment mode for advance',
+    description: 'How the advance was paid. Defaults to CASH if omitted.',
+  })
+  @IsOptional()
+  @IsEnum(PaymentMode, {
+    message: `advancePaymentMode must be one of: ${Object.values(PaymentMode).join(', ')}`,
+  })
+  advancePaymentMode?: PaymentMode;
+
+  @ApiProperty({
+    example: '412345678901',
+    required: false,
+    description:
+      'UPI transaction ID or bank UTR. Required when the advance is not cash.',
   })
   @IsOptional()
   @IsString()
-  advancePaymentMode?: string;
+  @MaxLength(50)
+  advanceReferenceId?: string;
 
   @ApiProperty({
     example: 'Special instructions for delivery team...',

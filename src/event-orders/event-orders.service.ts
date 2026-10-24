@@ -86,6 +86,26 @@ export class EventOrdersService {
     const totalAmount = +(taxableAmount + cgst + sgst).toFixed(2);
     const advancePaid = dto.advancePaid ?? 0;
     const securityDeposit = dto.securityDeposit ?? 0;
+
+    // Rule 1: the advance can never be more than the order total.
+    if (advancePaid > totalAmount) {
+      throw new BadRequestException(
+        `Advance (₹${advancePaid}) cannot be more than the order total (₹${totalAmount})`,
+      );
+    }
+
+    // Rule 2: the DTO already validated this is a real PaymentMode.
+    // These two variables are what the transaction below uses.
+    const advanceMode = dto.advancePaymentMode ?? PaymentMode.CASH;
+    const advanceRef = dto.advanceReferenceId?.trim();
+
+    // Rule 3: UPI / bank money needs a reference for bank-statement matching.
+    if (advancePaid > 0 && advanceMode !== PaymentMode.CASH && !advanceRef) {
+      throw new BadRequestException(
+        'Reference number is required for UPI / bank transfer payments',
+      );
+    }
+
     const balanceDue = +(totalAmount - advancePaid).toFixed(2);
 
     // Determine initial payment status
@@ -148,17 +168,16 @@ export class EventOrdersService {
       }
 
       if (advancePaid > 0) {
-        const paymentNumber = await generateEventPaymentNumber(
-          this.prisma,
-          companyId,
-        );
+        const paymentNumber = await generateEventPaymentNumber(tx, companyId);
         await tx.eventOrderPayment.create({
           data: {
             paymentNumber,
             eventOrderId: created.id,
             amount: advancePaid,
-            paymentMode:
-              (dto.advancePaymentMode as PaymentMode) ?? PaymentMode.CASH,
+            paymentMode: advanceMode,
+            // Cash has no reference, so store nothing for it
+            referenceId:
+              advanceMode === PaymentMode.CASH ? undefined : advanceRef,
             notes: 'Advance payment at event creation',
             companyId,
             createdById: userId,
@@ -474,7 +493,6 @@ export class EventOrdersService {
   }
 
   //  RECORD ADDITIONAL PAYMENT
-
   async recordPayment(
     id: string,
     dto: RecordEventPaymentDto,
@@ -499,19 +517,27 @@ export class EventOrdersService {
       );
     }
 
+    // NEW: same rule as in create(). UPI / bank payments need a reference
+    // so the owner can match them against the bank statement.
+    const reference = dto.referenceId?.trim();
+    if (dto.paymentMode !== PaymentMode.CASH && !reference) {
+      throw new BadRequestException(
+        'Reference number is required for UPI / bank transfer payments',
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
       // 1. Create the payment record
-      const paymentNumber = await generateEventPaymentNumber(
-        this.prisma,
-        companyId,
-      );
+      const paymentNumber = await generateEventPaymentNumber(tx, companyId);
       const payment = await tx.eventOrderPayment.create({
         data: {
           paymentNumber,
           eventOrderId: id,
           amount: dto.amount,
           paymentMode: dto.paymentMode,
-          referenceId: dto.referenceId,
+          // NEW: cash payments never store a reference
+          referenceId:
+            dto.paymentMode === PaymentMode.CASH ? undefined : reference,
           notes: dto.notes,
           companyId,
           createdById: userId,

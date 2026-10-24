@@ -73,6 +73,8 @@ enum ProductUnit {
   BOX
   CARTON
   KG
+  GRAM
+  MILLILITRE
 }
 
 enum InvoiceStatus {
@@ -1068,4 +1070,5 @@ enum MenuKey {
   EVENT_ORDERS
   INVENTORY
   EXPENSES
+  DELIVERY  
 }
