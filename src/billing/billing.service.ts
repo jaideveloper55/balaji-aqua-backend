@@ -266,8 +266,6 @@ export class BillingService {
     return map;
   }
 
-
-
   // CREATE INVOICE
 
   async createInvoice(
@@ -748,6 +746,13 @@ export class BillingService {
           `Payment amount (₹${dto.amount}) exceeds balance due (₹${invoice.balanceDue})`,
         );
       }
+    } else {
+      // NEW: payment against overall outstanding (opening balance / old dues)
+      if (dto.amount > customer.outstandingBalance + 0.01) {
+        throw new BadRequestException(
+          `Payment (₹${dto.amount}) exceeds customer outstanding (₹${customer.outstandingBalance})`,
+        );
+      }
     }
 
     let paymentNumber: string;
@@ -784,6 +789,38 @@ export class BillingService {
             status: newStatus,
           },
         });
+      } else {
+        let remaining = dto.amount;
+
+        const openInvoices = await tx.invoice.findMany({
+          where: {
+            companyId,
+            customerId: dto.customerId,
+            status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+            balanceDue: { gt: 0 },
+          },
+          orderBy: { invoiceDate: 'asc' },
+        });
+
+        for (const inv of openInvoices) {
+          if (remaining <= 0.01) break;
+
+          const apply = Math.min(remaining, inv.balanceDue);
+          const newPaid = inv.paidAmount + apply;
+          const newBalance = inv.totalAmount - newPaid;
+
+          await tx.invoice.update({
+            where: { id: inv.id },
+            data: {
+              paidAmount: newPaid,
+              balanceDue: Math.max(0, newBalance),
+              status:
+                newBalance <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL,
+            },
+          });
+
+          remaining -= apply;
+        }
       }
 
       await tx.customer.update({
@@ -898,8 +935,17 @@ export class BillingService {
       todaySummary.count += row._count;
     });
 
+    const data = payments.map((p) => ({
+      ...p,
+      invoiceLabel:
+        p.invoice?.invoiceNumber ??
+        (p.notes?.toLowerCase().includes('opening balance')
+          ? 'Opening Balance'
+          : 'On Account'),
+    }));
+
     return {
-      data: payments,
+      data,
       todaySummary,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };

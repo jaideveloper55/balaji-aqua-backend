@@ -886,6 +886,9 @@ export class CartService {
     // Extra payment toward previous outstanding invoices.
     // Allocate the amount to unpaid invoices, oldest first, so invoice balances
     // and payment history remain consistent.
+    // Extra payment toward previous outstanding.
+    // 1) Allocate to unpaid old invoices, oldest first.
+    // 2) Whatever is left reduces the opening balance (no invoice attached).
     if (
       dto.extraPayment !== undefined &&
       dto.extraPayment > 0 &&
@@ -895,30 +898,33 @@ export class CartService {
       const extraMode: PaymentMode = splits[0]?.mode ?? PaymentMode.CASH;
 
       await this.prisma.$transaction(async (tx) => {
+        const customerNow = await tx.customer.findUniqueOrThrow({
+          where: { id: cart.customerId! },
+          select: { outstandingBalance: true },
+        });
+
+        // Customer balance right now includes the unpaid part of the NEW bill.
+        // Remove it to get what the customer owed BEFORE this bill.
+        const previousOutstanding = Number(
+          (customerNow.outstandingBalance - finalBalanceDue).toFixed(2),
+        );
+
+        if (extraAmount > previousOutstanding + 0.01) {
+          throw new BadRequestException(
+            `Extra payment ₹${extraAmount} exceeds previous outstanding ₹${Math.max(0, previousOutstanding)}.`,
+          );
+        }
+
         const unpaidInvoices = await tx.invoice.findMany({
           where: {
             companyId,
             customerId: cart.customerId!,
-            status: {
-              in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL],
-            },
+            status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
             balanceDue: { gt: 0 },
             id: { not: invoice.id },
           },
           orderBy: [{ invoiceDate: 'asc' }, { createdAt: 'asc' }],
         });
-
-        const previousOutstanding = Number(
-          unpaidInvoices
-            .reduce((sum, oldInvoice) => sum + Number(oldInvoice.balanceDue), 0)
-            .toFixed(2),
-        );
-
-        if (extraAmount > previousOutstanding + 0.01) {
-          throw new BadRequestException(
-            `Extra payment ₹${extraAmount} exceeds previous invoice outstanding ₹${previousOutstanding}.`,
-          );
-        }
 
         const firstPaymentNumber = await this.generatePaymentNumber(companyId);
         const lastDash = firstPaymentNumber.lastIndexOf('-');
@@ -927,6 +933,7 @@ export class CartService {
           Number.parseInt(firstPaymentNumber.slice(lastDash + 1), 10) || 1;
         let remaining = extraAmount;
 
+        // Step 1: old invoices, oldest first
         for (const oldInvoice of unpaidInvoices) {
           if (remaining <= 0.001) break;
 
@@ -934,7 +941,6 @@ export class CartService {
           const allocatedAmount = Number(
             Math.min(remaining, oldBalance).toFixed(2),
           );
-
           if (allocatedAmount <= 0) continue;
 
           const newPaidAmount = Number(
@@ -943,14 +949,11 @@ export class CartService {
           const newBalanceDue = Number(
             Math.max(0, oldBalance - allocatedAmount).toFixed(2),
           );
-          const newStatus =
-            newBalanceDue <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
-          const paymentNumber =
-            paymentPrefix + String(nextSerial++).padStart(3, '0');
 
           await tx.payment.create({
             data: {
-              paymentNumber,
+              paymentNumber:
+                paymentPrefix + String(nextSerial++).padStart(3, '0'),
               customerId: cart.customerId!,
               invoiceId: oldInvoice.id,
               companyId,
@@ -968,17 +971,33 @@ export class CartService {
             data: {
               paidAmount: newPaidAmount,
               balanceDue: newBalanceDue,
-              status: newStatus,
+              status:
+                newBalanceDue <= 0.01
+                  ? InvoiceStatus.PAID
+                  : InvoiceStatus.PARTIAL,
             },
           });
 
           remaining = Number((remaining - allocatedAmount).toFixed(2));
         }
 
+        // Step 2: leftover goes against the opening balance (no invoice)
         if (remaining > 0.01) {
-          throw new BadRequestException(
-            `Could not allocate the full extra payment. Unallocated amount: ₹${remaining}.`,
-          );
+          await tx.payment.create({
+            data: {
+              paymentNumber:
+                paymentPrefix + String(nextSerial++).padStart(3, '0'),
+              customerId: cart.customerId!,
+              invoiceId: null,
+              companyId,
+              createdById: userId,
+              amount: remaining,
+              paymentMode: extraMode,
+              referenceId: dto.referenceId ?? null,
+              notes: 'Extra payment against opening balance',
+              paymentDate: new Date(),
+            },
+          });
         }
 
         await tx.customer.update({
@@ -998,7 +1017,7 @@ export class CartService {
             entryType: 'PAYMENT',
             paymentMode: extraMode,
             referenceNo: firstPaymentNumber,
-            description: `Extra payment of ₹${extraAmount} allocated to previous invoices`,
+            description: `Extra payment of ₹${extraAmount} against previous outstanding`,
             debitAmount: 0,
             creditAmount: extraAmount,
             balance: updatedCustomer.outstandingBalance,
