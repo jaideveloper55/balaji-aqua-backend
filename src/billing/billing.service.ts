@@ -21,6 +21,7 @@ import {
   InvoiceType,
   MovementSource,
   MovementType,
+  PaymentMode,
   Prisma,
   ProductStatus,
 } from '@prisma/client';
@@ -542,6 +543,7 @@ export class BillingService {
               customerCode: true,
             },
           },
+          eventOrder: { select: { eventNumber: true, eventName: true } }, 
           items: {
             include: { product: { select: { name: true, sku: true } } },
           },
@@ -642,6 +644,12 @@ export class BillingService {
     });
 
     if (!invoice) throw new NotFoundException('Invoice not found');
+
+    if (invoice.eventOrderId) {
+      throw new BadRequestException(
+        'This invoice belongs to an event order. Cancel it from Event Orders.',
+      );
+    }
 
     if (invoice.status === InvoiceStatus.CANCELLED) {
       throw new BadRequestException('Invoice already cancelled');
@@ -1293,6 +1301,12 @@ export class BillingService {
       throw new NotFoundException('Invoice not found');
     }
 
+    if (invoice.eventOrderId) {
+      throw new BadRequestException(
+        'This invoice belongs to an event order. Delete it from Event Orders.',
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
       for (const item of invoice.items) {
         const updated = await tx.product.update({
@@ -1348,6 +1362,222 @@ export class BillingService {
     });
   }
 
+  // ─── EVENT ORDER → INVOICE (no stock movement) ───
+  async createEventInvoice(
+    tx: Prisma.TransactionClient,
+    p: {
+      companyId: string;
+      userId: string;
+      eventOrderId: string;
+      eventNumber: string;
+      eventName: string;
+      eventDate: Date;
+      customerId?: string | null;
+      customerName: string;
+      customerPhone?: string | null;
+      items: {
+        productId: string;
+        productName: string;
+        sku: string;
+        unit: string;
+        quantity: number;
+        unitPrice: number;
+        lineTotal: number;
+      }[];
+      taxableAmount: number;
+      discount: number;
+      gstEnabled: boolean;
+      cgst: number;
+      sgst: number;
+      totalAmount: number;
+    },
+  ) {
+    const invoiceNumber = await this.generateInvoiceNumber(tx, p.companyId);
+
+    const invoice = await tx.invoice.create({
+      data: {
+        invoiceNumber,
+        companyId: p.companyId,
+        createdById: p.userId,
+        eventOrderId: p.eventOrderId,
+        customerId: p.customerId ?? null,
+        walkInName: p.customerId ? null : p.customerName,
+        walkInPhone: p.customerId ? null : (p.customerPhone ?? null),
+        invoiceType: p.customerId ? InvoiceType.SALE : InvoiceType.WALK_IN,
+        gstEnabled: p.gstEnabled,
+        gstRate: p.gstEnabled ? 18 : 0,
+        notes: `Event ${p.eventNumber} - ${p.eventName}${
+          p.discount > 0 ? ` (discount ₹${p.discount})` : ''
+        }`,
+        dueDate: p.eventDate,
+        subtotal: p.taxableAmount,
+        cgst: p.cgst,
+        sgst: p.sgst,
+        igst: 0,
+        totalAmount: p.totalAmount,
+        balanceDue: p.totalAmount,
+        paidAmount: 0,
+        status: InvoiceStatus.CONFIRMED,
+        items: {
+          create: p.items.map((i) => ({
+            productId: i.productId,
+            productName: i.productName,
+            sku: i.sku,
+            unit: i.unit,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            discount: 0,
+            taxAmount: 0,
+            lineTotal: i.lineTotal,
+            companyId: p.companyId,
+          })),
+        },
+      },
+    });
+
+    if (p.customerId) {
+      const c = await tx.customer.update({
+        where: { id: p.customerId },
+        data: { outstandingBalance: { increment: p.totalAmount } },
+        select: { outstandingBalance: true },
+      });
+
+      await tx.customerLedger.create({
+        data: {
+          customerId: p.customerId,
+          companyId: p.companyId,
+          entryType: 'INVOICE',
+          referenceNo: invoiceNumber,
+          description: `Invoice ${invoiceNumber} (Event ${p.eventNumber})`,
+          debitAmount: p.totalAmount,
+          creditAmount: 0,
+          cgst: p.cgst,
+          sgst: p.sgst,
+          igst: 0,
+          balance: c.outstandingBalance,
+          entryDate: new Date(),
+        },
+      });
+    }
+
+    return invoice;
+  }
+
+  // Mirrors an event payment into Billing → Payments. Skips older events with no invoice.
+  async applyEventPayment(
+    tx: Prisma.TransactionClient,
+    p: {
+      companyId: string;
+      userId: string;
+      eventOrderId: string;
+      amount: number;
+      paymentMode: PaymentMode;
+      referenceId?: string;
+      notes?: string;
+    },
+  ) {
+    const invoice = await tx.invoice.findUnique({
+      where: { eventOrderId: p.eventOrderId },
+    });
+    if (!invoice || invoice.status === InvoiceStatus.CANCELLED) return;
+
+    const paymentNumber = await this.generatePaymentNumber(tx, p.companyId);
+
+    await tx.payment.create({
+      data: {
+        paymentNumber,
+        customerId: invoice.customerId,
+        walkInName: invoice.walkInName,
+        walkInPhone: invoice.walkInPhone,
+        invoiceId: invoice.id,
+        companyId: p.companyId,
+        createdById: p.userId,
+        amount: p.amount,
+        paymentMode: p.paymentMode,
+        referenceId: p.referenceId ?? null,
+        notes: p.notes ?? `Event payment (${invoice.invoiceNumber})`,
+        paymentDate: new Date(),
+      },
+    });
+
+    const newPaid = +(invoice.paidAmount + p.amount).toFixed(2);
+    const newBalance = Math.max(0, +(invoice.totalAmount - newPaid).toFixed(2));
+
+    await tx.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        paidAmount: newPaid,
+        balanceDue: newBalance,
+        status: newBalance <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL,
+      },
+    });
+
+    if (invoice.customerId) {
+      const c = await tx.customer.update({
+        where: { id: invoice.customerId },
+        data: { outstandingBalance: { decrement: p.amount } },
+        select: { outstandingBalance: true },
+      });
+
+      await tx.customerLedger.create({
+        data: {
+          customerId: invoice.customerId,
+          companyId: p.companyId,
+          entryType: 'PAYMENT',
+          paymentMode: p.paymentMode,
+          referenceNo: paymentNumber,
+          description: `Payment against ${invoice.invoiceNumber}`,
+          debitAmount: 0,
+          creditAmount: p.amount,
+          balance: c.outstandingBalance,
+          entryDate: new Date(),
+        },
+      });
+    }
+  }
+
+  // Cancel/delete the event's invoice. Stock is NOT touched (event module owns it).
+  async removeEventInvoice(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    eventOrderId: string,
+    mode: 'CANCEL' | 'DELETE',
+  ) {
+    const invoice = await tx.invoice.findUnique({ where: { eventOrderId } });
+    if (!invoice) return;
+
+    if (invoice.customerId && invoice.balanceDue > 0) {
+      const c = await tx.customer.update({
+        where: { id: invoice.customerId },
+        data: { outstandingBalance: { decrement: invoice.balanceDue } },
+        select: { outstandingBalance: true },
+      });
+
+      await tx.customerLedger.create({
+        data: {
+          customerId: invoice.customerId,
+          companyId,
+          entryType: 'CREDIT_NOTE',
+          referenceNo: invoice.invoiceNumber,
+          description: `Event ${mode === 'CANCEL' ? 'cancelled' : 'deleted'}: ${invoice.invoiceNumber}`,
+          debitAmount: 0,
+          creditAmount: invoice.balanceDue,
+          balance: c.outstandingBalance,
+          entryDate: new Date(),
+        },
+      });
+    }
+
+    if (mode === 'CANCEL') {
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: { status: InvoiceStatus.CANCELLED, balanceDue: 0 },
+      });
+    } else {
+      await tx.payment.deleteMany({ where: { invoiceId: invoice.id } });
+      await tx.invoice.delete({ where: { id: invoice.id } });
+    }
+  }
   // GET POS PRODUCTS
 
   async getPOSProducts(companyId: string, search?: string) {

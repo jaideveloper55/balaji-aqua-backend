@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -22,10 +21,14 @@ import { QueryEventOrdersDto } from './dto/query-event-orders.dto';
 import { UpdateEventOrderDto } from './dto/update-event-order.dto';
 import { RecordEventPaymentDto } from './dto/record-payment.dto';
 import { CancelEventOrderDto } from './dto/cancel-event-order.dto';
+import { BillingService } from '../billing/billing.service'; // adjust path if needed
 
 @Injectable()
 export class EventOrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly billing: BillingService,
+  ) {}
 
   //  CREATE EVENT ORDER
 
@@ -94,8 +97,6 @@ export class EventOrdersService {
       );
     }
 
-    // Rule 2: the DTO already validated this is a real PaymentMode.
-    // These two variables are what the transaction below uses.
     const advanceMode = dto.advancePaymentMode ?? PaymentMode.CASH;
     const advanceRef = dto.advanceReferenceId?.trim();
 
@@ -108,7 +109,6 @@ export class EventOrdersService {
 
     const balanceDue = +(totalAmount - advancePaid).toFixed(2);
 
-    // Determine initial payment status
     let paymentStatus: EventPaymentStatus = EventPaymentStatus.UNPAID;
     if (advancePaid > 0 && advancePaid < totalAmount) {
       paymentStatus = EventPaymentStatus.PARTIAL;
@@ -167,6 +167,26 @@ export class EventOrdersService {
         });
       }
 
+      // Invoice for the Billing module (no stock movement)
+      await this.billing.createEventInvoice(tx, {
+        companyId,
+        userId,
+        eventOrderId: created.id,
+        eventNumber,
+        eventName: dto.eventName,
+        eventDate: new Date(dto.eventDate),
+        customerId: dto.customerId,
+        customerName: dto.customerName,
+        customerPhone: dto.customerPhone,
+        items: itemsData,
+        taxableAmount,
+        discount,
+        gstEnabled: dto.gstEnabled ?? false,
+        cgst,
+        sgst,
+        totalAmount,
+      });
+
       if (advancePaid > 0) {
         const paymentNumber = await generateEventPaymentNumber(tx, companyId);
         await tx.eventOrderPayment.create({
@@ -175,13 +195,24 @@ export class EventOrdersService {
             eventOrderId: created.id,
             amount: advancePaid,
             paymentMode: advanceMode,
-            // Cash has no reference, so store nothing for it
             referenceId:
               advanceMode === PaymentMode.CASH ? undefined : advanceRef,
             notes: 'Advance payment at event creation',
             companyId,
             createdById: userId,
           },
+        });
+
+        // Same advance shows in Billing → Payments
+        await this.billing.applyEventPayment(tx, {
+          companyId,
+          userId,
+          eventOrderId: created.id,
+          amount: advancePaid,
+          paymentMode: advanceMode,
+          referenceId:
+            advanceMode === PaymentMode.CASH ? undefined : advanceRef,
+          notes: `Advance for event ${eventNumber}`,
         });
       }
 
@@ -210,7 +241,6 @@ export class EventOrdersService {
     if (type) where.eventType = type;
     if (status) where.status = status;
 
-    // Date range filter
     if (dateFrom || dateTo) {
       where.eventDate = {};
       if (dateFrom) where.eventDate.gte = new Date(dateFrom);
@@ -266,7 +296,6 @@ export class EventOrdersService {
 
     const [totalEvents, upcomingEvents, revenueAgg, duesAgg] =
       await Promise.all([
-        // 1. Total events (excluding cancelled — those don't really count)
         this.prisma.eventOrder.count({
           where: {
             companyId,
@@ -274,7 +303,6 @@ export class EventOrdersService {
           },
         }),
 
-        // 2. Upcoming events (future date, not cancelled)
         this.prisma.eventOrder.count({
           where: {
             companyId,
@@ -285,7 +313,6 @@ export class EventOrdersService {
           },
         }),
 
-        // 3. Total revenue = sum of totalAmount for non-cancelled events
         this.prisma.eventOrder.aggregate({
           where: {
             companyId,
@@ -294,7 +321,6 @@ export class EventOrdersService {
           _sum: { totalAmount: true },
         }),
 
-        // 4. Pending dues = sum of balanceDue for non-cancelled events
         this.prisma.eventOrder.aggregate({
           where: {
             companyId,
@@ -467,7 +493,6 @@ export class EventOrdersService {
 
     return this.prisma.$transaction(async (tx) => {
       // 1. Release reserved stock ONLY if not yet delivered
-
       if (!existing.reservationReleased) {
         for (const item of existing.items) {
           await tx.product.update({
@@ -477,7 +502,10 @@ export class EventOrdersService {
         }
       }
 
-      // 2. Update event with cancellation info
+      // 2. Cancel the linked invoice (no stock change)
+      await this.billing.removeEventInvoice(tx, companyId, id, 'CANCEL');
+
+      // 3. Update event with cancellation info
       return tx.eventOrder.update({
         where: { id },
         data: {
@@ -510,15 +538,12 @@ export class EventOrdersService {
       );
     }
 
-    // Prevent overpayment
     if (dto.amount > existing.balanceDue) {
       throw new BadRequestException(
         `Payment amount (${dto.amount}) exceeds balance due (${existing.balanceDue})`,
       );
     }
 
-    // NEW: same rule as in create(). UPI / bank payments need a reference
-    // so the owner can match them against the bank statement.
     const reference = dto.referenceId?.trim();
     if (dto.paymentMode !== PaymentMode.CASH && !reference) {
       throw new BadRequestException(
@@ -535,7 +560,6 @@ export class EventOrdersService {
           eventOrderId: id,
           amount: dto.amount,
           paymentMode: dto.paymentMode,
-          // NEW: cash payments never store a reference
           referenceId:
             dto.paymentMode === PaymentMode.CASH ? undefined : reference,
           notes: dto.notes,
@@ -544,7 +568,19 @@ export class EventOrdersService {
         },
       });
 
-      // 2. Update the event totals
+      // 2. Mirror into Billing → Payments
+      await this.billing.applyEventPayment(tx, {
+        companyId,
+        userId,
+        eventOrderId: id,
+        amount: dto.amount,
+        paymentMode: dto.paymentMode,
+        referenceId:
+          dto.paymentMode === PaymentMode.CASH ? undefined : reference,
+        notes: dto.notes,
+      });
+
+      // 3. Update the event totals
       const newAdvancePaid = +(existing.advancePaid + dto.amount).toFixed(2);
       const newBalanceDue = +(existing.totalAmount - newAdvancePaid).toFixed(2);
       const newPaymentStatus: EventPaymentStatus =
@@ -583,6 +619,9 @@ export class EventOrdersService {
           });
         }
       }
+
+      // Remove the linked invoice and its payments (no stock change)
+      await this.billing.removeEventInvoice(tx, companyId, event.id, 'DELETE');
 
       await tx.eventOrderPayment.deleteMany({
         where: { eventOrderId: event.id },

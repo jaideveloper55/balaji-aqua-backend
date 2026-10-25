@@ -413,14 +413,18 @@ model Invoice {
   gstRate    Float   @default(18) // GST % used (18% default in India)
   notes      String?
 
+
+  eventOrderId String?     @unique
+  eventOrder   EventOrder? @relation(fields: [eventOrderId], references: [id])
+
+  items    InvoiceItem[]
+  payments Payment[]
+
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
 
   createdById String
   createdBy   User   @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
-
-  items    InvoiceItem[]
-  payments Payment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -935,6 +939,10 @@ model EventOrder {
   onSiteContactName  String?
   onSiteContactPhone String?
 
+  items    EventOrderItem[]
+  payments EventOrderPayment[]
+  invoice  Invoice?
+
 
  // Pricing
   subtotal        Float @default(0) 
@@ -969,9 +977,6 @@ model EventOrder {
 
   createdById String
   createdBy   User   @relation("EventOrderCreatedBy", fields: [createdById], references: [id])
-
-  items    EventOrderItem[]
-  payments EventOrderPayment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
