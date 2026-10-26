@@ -44,10 +44,19 @@ export class CreateInvoiceItemDto {
 }
 
 export class CreateInvoiceDto {
-  @ApiPropertyOptional({ description: 'Customer ID (for existing customers)' })
+  @ApiPropertyOptional({
+    description: 'Customer ID (optional for walk-in payments)',
+  })
   @IsOptional()
   @IsString()
   customerId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Invoice ID (optional)',
+  })
+  @IsOptional()
+  @IsString()
+  invoiceId?: string;
 
   @ApiPropertyOptional({
     description: 'Walk-in customer name (for WALK_IN type)',
@@ -116,13 +125,16 @@ export class UpdateInvoiceDto {
 // Record payment
 
 export class CreatePaymentDto {
-  @ApiProperty({ description: 'Customer ID who is paying' })
+  
+  @ApiPropertyOptional({
+    description: 'Customer ID (optional for walk-in payments)',
+  })
+  @IsOptional()
   @IsString()
-  customerId: string;
+  customerId?: string;
 
   @ApiPropertyOptional({
-    description:
-      'Invoice ID (optional — null means against overall outstanding)',
+    description: 'Invoice ID (optional)',
   })
   @IsOptional()
   @IsString()

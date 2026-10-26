@@ -287,7 +287,10 @@ export class BillingService {
       const customer = await this.prisma.customer.findFirst({
         where: { id: dto.customerId, companyId },
       });
-      if (!customer) throw new NotFoundException('Customer not found');
+
+      if (!customer) {
+        throw new NotFoundException('Customer not found');
+      }
     }
 
     const productIds = dto.items.map((i) => i.productId);
@@ -543,7 +546,7 @@ export class BillingService {
               customerCode: true,
             },
           },
-          eventOrder: { select: { eventNumber: true, eventName: true } }, 
+          eventOrder: { select: { eventNumber: true, eventName: true } },
           items: {
             include: { product: { select: { name: true, sku: true } } },
           },
@@ -729,33 +732,67 @@ export class BillingService {
     companyId: string,
     userId: string,
   ) {
-    const customer = await this.prisma.customer.findFirst({
-      where: { id: dto.customerId, companyId },
-    });
-    if (!customer) throw new NotFoundException('Customer not found');
+    if (!dto.customerId && !dto.invoiceId) {
+      throw new BadRequestException(
+        'A customer or invoice is required to record a payment',
+      );
+    }
+
+    if (!Number.isFinite(dto.amount) || dto.amount <= 0) {
+      throw new BadRequestException('Payment amount must be greater than zero');
+    }
+
+    const customer = dto.customerId
+      ? await this.prisma.customer.findFirst({
+          where: { id: dto.customerId, companyId },
+        })
+      : null;
+
+    if (dto.customerId && !customer) {
+      throw new NotFoundException('Customer not found');
+    }
 
     let invoice: Invoice | null = null;
 
     if (dto.invoiceId) {
       invoice = await this.prisma.invoice.findFirst({
-        where: { id: dto.invoiceId, companyId, customerId: dto.customerId },
+        where: { id: dto.invoiceId, companyId },
       });
 
-      if (!invoice) throw new NotFoundException('Invoice not found');
+      if (!invoice) {
+        throw new NotFoundException('Invoice not found');
+      }
+
+      if (
+        dto.customerId &&
+        invoice.customerId &&
+        invoice.customerId !== dto.customerId
+      ) {
+        throw new BadRequestException(
+          'Invoice does not belong to the selected customer',
+        );
+      }
 
       if (invoice.status === InvoiceStatus.PAID) {
         throw new BadRequestException('Invoice is already fully paid');
       }
+
       if (invoice.status === InvoiceStatus.CANCELLED) {
         throw new BadRequestException('Cannot pay a cancelled invoice');
       }
+
       if (dto.amount > invoice.balanceDue + 0.01) {
         throw new BadRequestException(
           `Payment amount (₹${dto.amount}) exceeds balance due (₹${invoice.balanceDue})`,
         );
       }
     } else {
-      // NEW: payment against overall outstanding (opening balance / old dues)
+      if (!customer) {
+        throw new BadRequestException(
+          'A registered customer is required for payments without an invoice',
+        );
+      }
+
       if (dto.amount > customer.outstandingBalance + 0.01) {
         throw new BadRequestException(
           `Payment (₹${dto.amount}) exceeds customer outstanding (₹${customer.outstandingBalance})`,
@@ -763,7 +800,7 @@ export class BillingService {
       }
     }
 
-    let paymentNumber: string;
+    let paymentNumber = '';
 
     await this.prisma.$transaction(async (tx) => {
       paymentNumber = await this.generatePaymentNumber(tx, companyId);
@@ -771,40 +808,45 @@ export class BillingService {
       await tx.payment.create({
         data: {
           paymentNumber,
-          customerId: dto.customerId,
-          invoiceId: dto.invoiceId ?? null,
+          customerId: dto.customerId ?? null,
+          invoiceId: invoice?.id ?? null,
           companyId,
           createdById: userId,
           amount: dto.amount,
           paymentMode: dto.paymentMode,
-          referenceId: dto.referenceId,
-          notes: dto.notes,
+          referenceId: dto.referenceId ?? null,
+          notes: dto.notes ?? null,
           paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
         },
       });
 
-      if (invoice !== null) {
-        const newPaid = invoice.paidAmount + dto.amount;
-        const newBalance = invoice.totalAmount - newPaid;
-        const newStatus =
-          newBalance <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
+      if (invoice) {
+        const newPaid = Number((invoice.paidAmount + dto.amount).toFixed(2));
+        const newBalance = Math.max(
+          0,
+          Number((invoice.totalAmount - newPaid).toFixed(2)),
+        );
 
         await tx.invoice.update({
-          where: { id: dto.invoiceId! },
+          where: { id: invoice.id },
           data: {
             paidAmount: newPaid,
-            balanceDue: Math.max(0, newBalance),
-            status: newStatus,
+            balanceDue: newBalance,
+            status:
+              newBalance <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL,
           },
         });
-      } else {
+      } else if (customer) {
+        // Apply an account payment to the customer's oldest outstanding invoices.
         let remaining = dto.amount;
 
         const openInvoices = await tx.invoice.findMany({
           where: {
             companyId,
-            customerId: dto.customerId,
-            status: { in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL] },
+            customerId: customer.id,
+            status: {
+              in: [InvoiceStatus.CONFIRMED, InvoiceStatus.PARTIAL],
+            },
             balanceDue: { gt: 0 },
           },
           orderBy: { invoiceDate: 'asc' },
@@ -814,54 +856,58 @@ export class BillingService {
           if (remaining <= 0.01) break;
 
           const apply = Math.min(remaining, inv.balanceDue);
-          const newPaid = inv.paidAmount + apply;
-          const newBalance = inv.totalAmount - newPaid;
+          const newPaid = Number((inv.paidAmount + apply).toFixed(2));
+          const newBalance = Math.max(
+            0,
+            Number((inv.totalAmount - newPaid).toFixed(2)),
+          );
 
           await tx.invoice.update({
             where: { id: inv.id },
             data: {
               paidAmount: newPaid,
-              balanceDue: Math.max(0, newBalance),
+              balanceDue: newBalance,
               status:
                 newBalance <= 0.01 ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL,
             },
           });
 
-          remaining -= apply;
+          remaining = Number((remaining - apply).toFixed(2));
         }
       }
 
-      await tx.customer.update({
-        where: { id: dto.customerId },
-        data: { outstandingBalance: { decrement: dto.amount } },
-      });
+      // Only registered customers have an outstanding balance and ledger.
+      if (dto.customerId) {
+        const updatedCustomer = await tx.customer.update({
+          where: { id: dto.customerId },
+          data: {
+            outstandingBalance: { decrement: dto.amount },
+          },
+          select: { outstandingBalance: true },
+        });
 
-      const updatedCustomer = await tx.customer.findUnique({
-        where: { id: dto.customerId },
-        select: { outstandingBalance: true },
-      });
-
-      await tx.customerLedger.create({
-        data: {
-          customerId: dto.customerId,
-          companyId,
-          entryType: 'PAYMENT',
-          paymentMode: dto.paymentMode,
-          referenceNo: paymentNumber,
-          description: invoice
-            ? `Payment against ${invoice.invoiceNumber}`
-            : 'Payment against outstanding balance',
-          debitAmount: 0,
-          creditAmount: dto.amount,
-          balance: updatedCustomer!.outstandingBalance,
-          entryDate: new Date(),
-        },
-      });
+        await tx.customerLedger.create({
+          data: {
+            customerId: dto.customerId,
+            companyId,
+            entryType: 'PAYMENT',
+            paymentMode: dto.paymentMode,
+            referenceNo: paymentNumber,
+            description: invoice
+              ? `Payment against ${invoice.invoiceNumber}`
+              : 'Payment against outstanding balance',
+            debitAmount: 0,
+            creditAmount: dto.amount,
+            balance: updatedCustomer.outstandingBalance,
+            entryDate: new Date(),
+          },
+        });
+      }
     });
 
     return {
       message: 'Payment recorded successfully',
-      paymentNumber: paymentNumber!,
+      paymentNumber,
     };
   }
 
